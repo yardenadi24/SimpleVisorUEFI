@@ -1,3 +1,26 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="shv.c" />
+    <ClCompile Include="shvutil.c" />
+    <ClCompile Include="shvvmx.c" />
+    <ClCompile Include="shvvmxhv.c" />
+    <ClCompile Include="shvvp.c" />
+    <ClCompile Include="$(Configuration)\shvos.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="shv.h" />
+    <ClInclude Include="ntint.h" />
+    <ClInclude Include="shv_x.h" />
+    <ClInclude Include="vmx.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="shvvmxhvx64.asm" />
+    <MASM Include="$(Configuration)\shvosx64.asm" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="uefi">
+      <UniqueIdentifier>{b9114a28-d5ed-43b4-b29b-f2e425d309a5}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
 </Project>

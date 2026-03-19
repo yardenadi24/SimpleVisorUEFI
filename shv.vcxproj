@@ -13,9 +13,12 @@
   <PropertyGroup Label="Globals">
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{4C048BB2-7E8D-43BF-B29D-942461275023}</ProjectGuid>
-    <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='UEFI|x64'">
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
   <Import Project="$(Configuration)\$(Configuration).default.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)'=='UEFI'">
@@ -29,13 +32,18 @@
   <PropertyGroup>
     <IncludePath>$(IncludePath);$(VC_IncludePath)</IncludePath>
   </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='UEFI|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="shv.c" />
     <ClCompile Include="shvutil.c" />
     <ClCompile Include="shvvmx.c" />
     <ClCompile Include="shvvmxhv.c" />
     <ClCompile Include="shvvp.c" />
-    <ClCompile Include="$(Configuration)\shvos.c"/>
+    <ClCompile Include="$(Configuration)\shvos.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="shv.h" />
@@ -45,6 +53,6 @@
   </ItemGroup>
   <ItemGroup>
     <MASM Include="shvvmxhvx64.asm" />
-    <MASM Include="$(Configuration)\shvosx64.asm"/>
+    <MASM Include="$(Configuration)\shvosx64.asm" />
   </ItemGroup>
 </Project>
