@@ -108,6 +108,43 @@ typedef struct _KTSS64
 } KTSS64, *PKTSS64;
 #pragma pack(pop)
 
+//
+// x86-64 IDT Gate Descriptor (16 bytes per entry)
+//
+typedef struct _HOST_IDT_ENTRY
+{
+    UINT16 OffsetLow;
+    UINT16 Selector;
+    UINT8  Ist;
+    UINT8  TypeAttr;
+    UINT16 OffsetMid;
+    UINT32 OffsetHigh;
+    UINT32 Reserved;
+} HOST_IDT_ENTRY, * PHOST_IDT_ENTRY;
+
+C_ASSERT(sizeof(HOST_IDT_ENTRY) == 16);
+
+//
+// IDT type/attribute constants
+//
+#define IDT_TYPE_INTERRUPT_GATE     0x8E    // Present, DPL=0, 64-bit interrupt gate
+#define IDT_TYPE_TRAP_GATE          0x8F    // Present, DPL=0, 64-bit trap gate
+
+//
+// Key interrupt vectors
+//
+#define VECTOR_NMI                  2
+#define VECTOR_DOUBLE_FAULT         8
+#define VECTOR_MACHINE_CHECK        18
+
+//
+// VM-Entry interruption info field constants
+//
+#define INTR_INFO_VALID_BIT         (1U << 31)
+#define INTR_TYPE_NMI               (2U << 8)
+#define INTR_TYPE_HARD_EXCEPTION    (3U << 8)
+#define INTR_TYPE_EXT_INTR          (0U << 8)
+
 typedef struct _MTRR_CAPABILITIES
 {
     union
@@ -124,6 +161,7 @@ typedef struct _MTRR_CAPABILITIES
         UINT64 AsUlonglong;
     };
 } MTRR_CAPABILITIES, *PMTRR_CAPABILITIES;
+
 C_ASSERT(sizeof(MTRR_CAPABILITIES) == sizeof(UINT64));
 
 typedef struct _MTRR_VARIABLE_BASE

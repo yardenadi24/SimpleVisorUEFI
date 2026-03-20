@@ -40,7 +40,7 @@ Environment:
 //
 #include <Pi/PiDxeCis.h>
 #include <Protocol/MpService.h>
-
+#include <Protocol/LoadedImage.h>
 //
 // Variable Arguments (CRT)
 //
@@ -76,6 +76,17 @@ EFI_MP_SERVICES_PROTOCOL* _gPiMpService;
 // TSS Segment we will use
 //
 #define KGDT64_SYS_TSS          0x60
+
+//
+// Original ExitBootServices function pointer, saved before hooking.
+//
+EFI_EXIT_BOOT_SERVICES _gOriginalExitBootServices;
+
+//
+// Our loaded image base and size, used to protect our memory from reclamation.
+//
+EFI_PHYSICAL_ADDRESS _gImageBase;
+UINT64 _gImageSize;
 
 EFI_STATUS
 __forceinline
@@ -335,6 +346,78 @@ ShvOsGetActiveProcessorCount (
     return (INT32)enabledCpuCount;
 }
 
+//
+// ShvProtectImageMemory
+//
+// Converts our .efi image pages from EfiBootServicesCode to
+// EfiRuntimeServicesCode in the firmware's internal memory map. This prevents
+// the OS loader from reclaiming our code after ExitBootServices.
+//
+// Strategy: Free our image pages (marking them as available), then immediately
+// re-allocate them at the same address as EfiRuntimeServicesCode.
+//
+VOID
+ShvProtectImageMemory(
+    VOID
+)
+{
+    EFI_STATUS status;
+    UINTN pageCount;
+    EFI_PHYSICAL_ADDRESS allocAddress;
+
+    pageCount = EFI_SIZE_TO_PAGES(_gImageSize);
+    allocAddress = _gImageBase;
+
+    //
+    // Free the pages (changes type to EfiConventionalMemory in firmware map)
+    //
+    status = gBS->FreePages(_gImageBase, pageCount);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Warning: FreePages failed for image protection: %r\n", status);
+        return;
+    }
+
+    //
+    // Re-allocate at the same address as EfiRuntimeServicesCode
+    //
+    status = gBS->AllocatePages(AllocateAddress,
+        EfiRuntimeServicesCode,
+        pageCount,
+        &allocAddress);
+    if (EFI_ERROR(status))
+    {
+        Print(L"CRITICAL: AllocatePages failed for image protection: %r\n", status);
+    }
+}
+
+//
+// ShvExitBootServicesHook
+//
+// Hooked ExitBootServices. This is called by the OS loader (winload.efi) when
+// it is ready to take over the machine. We restore the original pointer and
+// call through. The real protection was already done by ShvProtectImageMemory
+// above; this hook is an additional safety net and logging point.
+//
+EFI_STATUS
+EFIAPI
+ShvExitBootServicesHook(
+    IN EFI_HANDLE ImageHandle,
+    IN UINTN MapKey
+)
+{
+    //
+    // Restore the original ExitBootServices pointer before doing anything.
+    // This ensures our hook only fires once and recursive calls go to firmware.
+    //
+    gBS->ExitBootServices = _gOriginalExitBootServices;
+
+    //
+    // Call the original ExitBootServices with the caller's MapKey.
+    //
+    return _gOriginalExitBootServices(ImageHandle, MapKey);
+}
+
 VOID
 ShvOsDebugPrintWide (
     _In_ CHAR16* Format,
@@ -375,7 +458,7 @@ UefiMain (
     )
 {
     EFI_STATUS efiStatus;
-
+    EFI_LOADED_IMAGE_PROTOCOL* loadedImage;
     //
     // Find the PI MpService protocol used for multi-processor startup
     //
@@ -386,6 +469,44 @@ UefiMain (
     {
         Print(L"Unable to locate the MpServices protocol: %r\n", efiStatus);
         return efiStatus;
+    }
+
+    //
+// Get our loaded image information so we know our base address and size.
+// We need this to protect our image memory from being reclaimed after
+// ExitBootServices.
+//
+    efiStatus = gBS->HandleProtocol(ImageHandle,
+        &gEfiLoadedImageProtocolGuid,
+        (VOID**)&loadedImage);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"Unable to get loaded image protocol: %r\n", efiStatus);
+        return efiStatus;
+    }
+
+    _gImageBase = (EFI_PHYSICAL_ADDRESS)loadedImage->ImageBase;
+    _gImageSize = loadedImage->ImageSize;
+
+    //
+    // Protect our image memory by converting it from EfiBootServicesCode to
+    // EfiRuntimeServicesCode in the firmware's memory map. This must be done
+    // BEFORE the OS loader calls GetMemoryMap.
+    //
+    ShvProtectImageMemory();
+
+    //
+    // Hook ExitBootServices as an additional safety net.
+    //
+    _gOriginalExitBootServices = gBS->ExitBootServices;
+    gBS->ExitBootServices = ShvExitBootServicesHook;
+
+    if (EFI_ERROR(efiStatus))
+    {
+        //
+        // If we failed to load, restore ExitBootServices to the original
+        //
+        gBS->ExitBootServices = _gOriginalExitBootServices;
     }
 
     //

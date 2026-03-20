@@ -180,6 +180,42 @@ ShvVmxHandleVmx (
 }
 
 VOID
+ShvVmxHandleNmi(
+    _In_ PSHV_VP_STATE VpState
+)
+{
+    UNREFERENCED_PARAMETER(VpState);
+
+    //
+    // An NMI caused a VM exit. We must re-inject it into the guest so that the
+    // operating system's NMI handler (crash dump, watchdog, profiling, etc.)
+    // executes correctly.
+    //
+    // The VM-Entry interruption-information field format:
+    //   Bits 7:0   = Vector (2 for NMI)
+    //   Bits 10:8  = Type (2 = NMI)
+    //   Bit 31     = Valid
+    //
+    __vmx_vmwrite(VM_ENTRY_INTR_INFO,
+        INTR_INFO_VALID_BIT | INTR_TYPE_NMI | VECTOR_NMI);
+}
+
+VOID
+ShvVmxHandleExternalInterrupt(
+    _In_ PSHV_VP_STATE VpState
+)
+{
+    UNREFERENCED_PARAMETER(VpState);
+
+    //
+    // An external interrupt caused a VM exit. Since we don't use
+    // "acknowledge interrupt on exit" (VM_EXIT_ACK_INTR_ON_EXIT),
+    // the interrupt is still pending and will be delivered to the guest
+    // via its IDT upon VM entry (assuming the guest has interrupts enabled).
+    //
+}
+
+VOID
 ShvVmxHandleExit (
     _In_ PSHV_VP_STATE VpState
     )
@@ -214,8 +250,29 @@ ShvVmxHandleExit (
     case EXIT_REASON_VMXON:
         ShvVmxHandleVmx(VpState);
         break;
+    case EXIT_REASON_EXCEPTION_NMI:
+        ShvVmxHandleNmi(VpState);
+        return;
+    case EXIT_REASON_EXTERNAL_INTERRUPT:
+        ShvVmxHandleExternalInterrupt(VpState);
+        return;
+    case EXIT_REASON_TRIPLE_FAULT:
+        //
+        // Triple fault in guest -- nothing we can do, don't advance RIP.
+        //
+        return;
+    case EXIT_REASON_EPT_VIOLATION:
+    case EXIT_REASON_EPT_MISCONFIG:
+        //
+        // EPT violation or misconfiguration. Shouldn't happen with our
+        // identity-mapped EPT covering 512GB. Don't advance RIP.
+        //
+        return;
     default:
-        break;
+        //
+        // Unexpected exit reason. Do NOT advance RIP.
+        //
+        return;
     }
 
     //

@@ -96,4 +96,17 @@
     iretq
     ShvOsRestoreContext ENDP
 
+    ; Minimal NMI handler for VMX host mode.
+    ;
+    ; When the processor is in VMX root mode (processing a VM exit), NMIs
+    ; delivered through the host IDT land here. We simply IRETQ to return.
+    ;
+    ; LIMITATION: The NMI is effectively consumed/lost. A production hypervisor
+    ; would set a per-VP flag here and check it before VMRESUME, then inject
+    ; the NMI into the guest via VM_ENTRY_INTR_INFO.
+    ;
+    ShvHostNmiHandler PROC
+    iretq
+    ShvHostNmiHandler ENDP
+
     end

@@ -174,6 +174,98 @@ ShvVmxEptInitialize (
     }
 }
 
+VOID
+ShvVmxHostPageTablesInitialize(
+    _In_ PSHV_VP_DATA VpData
+)
+{
+    UINT32 i, j;
+    //
+// Build identity-mapped x86-64 page tables using 2MB large pages.
+// This is structurally identical to the EPT setup but uses standard x86-64
+// PTE format bits instead of EPT bits.
+//
+// PML4[0] -> PDPT -> PD[i] -> 2MB identity-mapped pages
+// This covers 512 * 512 * 2MB = 512GB of physical address space.
+//
+
+//
+// PML4E[0]: Present + Read/Write, points to PDPT
+//
+    VpData->HostPml4[0] = ShvOsGetPhysicalAddress(&VpData->HostPdpt) |
+        0x3;  // Present | Read/Write
+
+    //
+    // Fill each PDPTE to point to its corresponding PD page
+    //
+    for (i = 0; i < PDPTE_ENTRY_COUNT; i++)
+    {
+        VpData->HostPdpt[i] = ShvOsGetPhysicalAddress(&VpData->HostPd[i][0]) |
+            0x3;  // Present | Read/Write
+    }
+
+    //
+    // Fill each PDE as a 2MB large page, identity-mapped
+    //
+    for (i = 0; i < PDPTE_ENTRY_COUNT; i++)
+    {
+        for (j = 0; j < PDE_ENTRY_COUNT; j++)
+        {
+            //
+            // Physical address = (i * 512 + j) * 2MB
+            // Bits: Present(0) | Read/Write(1) | Page Size 2MB(7)
+            //
+            VpData->HostPd[i][j] = (((UINT64)i * PDE_ENTRY_COUNT + j) * _2MB) |
+                0x83;  // Present | Read/Write | Large Page (PS bit)
+        }
+    }
+
+    //
+    // Store the physical address for HOST_CR3
+    //
+    VpData->HostCr3PhysicalAddress = ShvOsGetPhysicalAddress(&VpData->HostPml4);
+}
+
+VOID
+ShvVmxHostIdtInitialize(
+    _In_ PSHV_VP_DATA VpData,
+    _In_ UINT16 HostCs
+)
+{
+    uintptr_t handlerAddress;
+
+    //
+    // Build a minimal host IDT. Most entries are left zeroed (not present),
+    // which means any unexpected exception in VMX root mode will escalate to a
+    // double fault and then triple fault -- effectively a machine reset. This
+    // is acceptable for a minimal hypervisor; a production system would need
+    // handlers for all architectural exceptions.
+    //
+    // We MUST have a valid NMI handler (vector 2) because:
+    //   1) The processor may force NMI exiting via must-be-1 pin-based controls
+    //   2) NMIs can arrive during VM-exit processing (host mode)
+    //   3) Without a valid handler, we'd triple-fault
+    //
+
+    handlerAddress = (uintptr_t)ShvHostNmiHandler;
+
+    //
+    // Set up the NMI gate (vector 2) as a 64-bit interrupt gate
+    //
+    VpData->HostIdt[VECTOR_NMI].OffsetLow = (UINT16)(handlerAddress & 0xFFFF);
+    VpData->HostIdt[VECTOR_NMI].Selector = HostCs;
+    VpData->HostIdt[VECTOR_NMI].Ist = 0;
+    VpData->HostIdt[VECTOR_NMI].TypeAttr = IDT_TYPE_INTERRUPT_GATE;
+    VpData->HostIdt[VECTOR_NMI].OffsetMid = (UINT16)((handlerAddress >> 16) & 0xFFFF);
+    VpData->HostIdt[VECTOR_NMI].OffsetHigh = (UINT32)((handlerAddress >> 32) & 0xFFFFFFFF);
+    VpData->HostIdt[VECTOR_NMI].Reserved = 0;
+
+    //
+    // Store the physical address for later use
+    //
+    VpData->HostIdtPhysicalAddress = ShvOsGetPhysicalAddress(&VpData->HostIdt);
+}
+
 UINT8
 ShvVmxEnterRootModeOnVp (
     _In_ PSHV_VP_DATA VpData
@@ -468,7 +560,7 @@ ShvVmxSetupVmcsForVp (
     //
     __vmx_vmwrite(GUEST_IDTR_BASE, (uintptr_t)state->Idtr.Base);
     __vmx_vmwrite(GUEST_IDTR_LIMIT, state->Idtr.Limit);
-    __vmx_vmwrite(HOST_IDTR_BASE, (uintptr_t)state->Idtr.Base);
+    __vmx_vmwrite(HOST_IDTR_BASE, (uintptr_t)&VpData->HostIdt);
 
     //
     // Load CR0
@@ -482,7 +574,7 @@ ShvVmxSetupVmcsForVp (
     // because we may be executing in an arbitrary user-mode process right now
     // as part of the DPC interrupt we execute in.
     //
-    __vmx_vmwrite(HOST_CR3, VpData->SystemDirectoryTableBase);
+    __vmx_vmwrite(HOST_CR3, VpData->HostCr3PhysicalAddress);
     __vmx_vmwrite(GUEST_CR3, state->Cr3);
 
     //
@@ -589,7 +681,8 @@ ShvVmxLaunchOnVp (
     // Initialize the EPT structures
     //
     ShvVmxEptInitialize(VpData);
-
+    ShvVmxHostPageTablesInitialize(VpData);
+    ShvVmxHostIdtInitialize(VpData, VpData->ContextFrame.SegCs & ~RPL_MASK);
     //
     // Attempt to enter VMX root mode on this processor.
     //

@@ -102,6 +102,22 @@ ShvVmxEptInitialize (
     _In_ PSHV_VP_DATA VpData
     );
 
+VOID
+ShvVmxHostPageTablesInitialize(
+    _In_ PSHV_VP_DATA VpData
+);
+
+VOID
+ShvVmxHostIdtInitialize(
+    _In_ PSHV_VP_DATA VpData,
+    _In_ UINT16 HostCs
+);
+
+VOID
+ShvHostNmiHandler(
+    VOID
+);
+
 DECLSPEC_NORETURN
 VOID
 ShvVpRestoreAfterLaunch (

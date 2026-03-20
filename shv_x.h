@@ -33,6 +33,11 @@ Environment:
 #define _1GB                        (1 * 1024 * 1024 * 1024)
 #define _2MB                        (2 * 1024 * 1024)
 
+//
+// Number of IDT entries in the host IDT (full 256 vectors)
+//
+#define HOST_IDT_ENTRY_COUNT        256
+
 struct _SHV_CALLBACK_CONTEXT;
 
 typedef
@@ -81,6 +86,8 @@ typedef struct _SHV_VP_DATA
             UINT64 MsrBitmapPhysicalAddress;
             UINT64 EptPml4PhysicalAddress;
             UINT32 EptControls;
+            UINT64 HostCr3PhysicalAddress;
+            UINT64 HostIdtPhysicalAddress;
         };
     };
 
@@ -89,11 +96,26 @@ typedef struct _SHV_VP_DATA
     DECLSPEC_ALIGN(PAGE_SIZE) VMX_PDPTE Epdpt[PDPTE_ENTRY_COUNT];
     DECLSPEC_ALIGN(PAGE_SIZE) VMX_LARGE_PDE Epde[PDPTE_ENTRY_COUNT][PDE_ENTRY_COUNT];
 
+    DECLSPEC_ALIGN(PAGE_SIZE) UINT64 HostPml4[PML4E_ENTRY_COUNT];
+    DECLSPEC_ALIGN(PAGE_SIZE) UINT64 HostPdpt[PDPTE_ENTRY_COUNT];
+    DECLSPEC_ALIGN(PAGE_SIZE) UINT64 HostPd[PDPTE_ENTRY_COUNT][PDE_ENTRY_COUNT];
+    DECLSPEC_ALIGN(PAGE_SIZE) HOST_IDT_ENTRY HostIdt[HOST_IDT_ENTRY_COUNT];
+
     DECLSPEC_ALIGN(PAGE_SIZE) VMX_VMCS VmxOn;
     DECLSPEC_ALIGN(PAGE_SIZE) VMX_VMCS Vmcs;
 } SHV_VP_DATA, *PSHV_VP_DATA;
 
-C_ASSERT(sizeof(SHV_VP_DATA) == (KERNEL_STACK_SIZE + (512 + 5) * PAGE_SIZE));
+C_ASSERT(sizeof(SHV_VP_DATA) == KERNEL_STACK_SIZE +
+    sizeof(((PSHV_VP_DATA)0)->MsrBitmap) +
+    sizeof(((PSHV_VP_DATA)0)->Epml4) +
+    sizeof(((PSHV_VP_DATA)0)->Epdpt) +
+    sizeof(((PSHV_VP_DATA)0)->Epde) +
+    sizeof(((PSHV_VP_DATA)0)->VmxOn) +
+    sizeof(((PSHV_VP_DATA)0)->Vmcs) +
+    sizeof(((PSHV_VP_DATA)0)->HostPml4) +
+    sizeof(((PSHV_VP_DATA)0)->HostPdpt) +
+    sizeof(((PSHV_VP_DATA)0)->HostPd) +
+    sizeof(((PSHV_VP_DATA)0)->HostIdt));
 
 VOID
 _sldt (

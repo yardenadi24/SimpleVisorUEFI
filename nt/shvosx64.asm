@@ -87,5 +87,10 @@ include ksamd64.inc
         mov     rcx, CxRcx[rcx]     ; Restore RCX since we spilled it
         ret                         ; Restore RIP
     LEAF_END ShvOsRestoreContext2, _TEXT$00
-
+    ; Minimal NMI handler for VMX host mode.
+    ; See uefi/shvosx64.asm for detailed comments.
+    ;
+    LEAF_ENTRY ShvHostNmiHandler, _TEXT$00
+        iretq
+    LEAF_END ShvHostNmiHandler, _TEXT$00
     end
