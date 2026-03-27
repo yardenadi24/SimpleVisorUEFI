@@ -35,7 +35,14 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='UEFI|x64'">
     <ClCompile>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <Optimization>Disabled</Optimization>
+      <InlineFunctionExpansion>Disabled</InlineFunctionExpansion>
+      <OmitFramePointers>false</OmitFramePointers>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
+    <Link>
+      <SubSystem>EFI Runtime</SubSystem>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="shv.c" />
@@ -48,6 +55,7 @@
   <ItemGroup>
     <ClInclude Include="shv.h" />
     <ClInclude Include="ntint.h" />
+    <ClInclude Include="shvdbg.h" />
     <ClInclude Include="shv_x.h" />
     <ClInclude Include="vmx.h" />
   </ItemGroup>
