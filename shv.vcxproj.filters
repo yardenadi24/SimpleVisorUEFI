@@ -13,6 +13,7 @@
     <ClInclude Include="ntint.h" />
     <ClInclude Include="shv_x.h" />
     <ClInclude Include="vmx.h" />
+    <ClInclude Include="shvdbg.h" />
   </ItemGroup>
   <ItemGroup>
     <MASM Include="shvvmxhvx64.asm" />
