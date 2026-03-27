@@ -560,7 +560,7 @@ ShvVmxSetupVmcsForVp (
     //
     __vmx_vmwrite(GUEST_IDTR_BASE, (uintptr_t)state->Idtr.Base);
     __vmx_vmwrite(GUEST_IDTR_LIMIT, state->Idtr.Limit);
-    __vmx_vmwrite(HOST_IDTR_BASE, (uintptr_t)&VpData->HostIdt);
+    __vmx_vmwrite(HOST_IDTR_BASE, (uintptr_t)VpData->HostIdtBase);
 
     //
     // Load CR0
@@ -568,13 +568,14 @@ ShvVmxSetupVmcsForVp (
     __vmx_vmwrite(CR0_READ_SHADOW, state->Cr0);
     __vmx_vmwrite(HOST_CR0, state->Cr0);
     __vmx_vmwrite(GUEST_CR0, state->Cr0);
+    __vmx_vmwrite(CR0_GUEST_HOST_MASK, CR0_NE);
 
     //
     // Load CR3 -- do not use the current process' address space for the host,
     // because we may be executing in an arbitrary user-mode process right now
     // as part of the DPC interrupt we execute in.
     //
-    __vmx_vmwrite(HOST_CR3, VpData->HostCr3PhysicalAddress);
+    __vmx_vmwrite(HOST_CR3, VpData->HostCr3);
     __vmx_vmwrite(GUEST_CR3, state->Cr3);
 
     //
@@ -582,8 +583,8 @@ ShvVmxSetupVmcsForVp (
     //
     __vmx_vmwrite(HOST_CR4, state->Cr4);
     __vmx_vmwrite(GUEST_CR4, state->Cr4);
-    __vmx_vmwrite(CR4_READ_SHADOW, state->Cr4);
-
+    __vmx_vmwrite(CR4_READ_SHADOW, state->Cr4 & ~CR4_VMXE);
+    __vmx_vmwrite(CR4_GUEST_HOST_MASK, CR4_VMXE);
     //
     // Load debug MSR and register (DR7)
     //

@@ -687,3 +687,7 @@ static_assert(sizeof(VMX_PDPTE) == sizeof(UINT64), "EPDPTE Size Mismatch");
 #define PDPTE_ENTRY_COUNT   512
 #define PDE_ENTRY_COUNT     512
 
+#define CR0_NE   (1UL << 5)
+#define CR0_PE   (1UL << 0)
+#define CR0_PG   (1UL << 31)
+#define CR4_VMXE (1UL << 13)

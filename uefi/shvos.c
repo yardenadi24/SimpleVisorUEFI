@@ -88,6 +88,16 @@ EFI_EXIT_BOOT_SERVICES _gOriginalExitBootServices;
 EFI_PHYSICAL_ADDRESS _gImageBase;
 UINT64 _gImageSize;
 
+//
+// UEFI runs with identity mapping, so physical == virtual.
+// This helper converts a PFN-masked physical address to a pointer.
+//
+#define PA_TO_PTR(pa) ((UINT64*)(UINTN)(pa))
+
+#define PTE_PRESENT  0x1ULL
+#define PTE_LARGE    0x80ULL
+#define PTE_PFN_MASK 0x000FFFFFFFFFF000ULL
+
 EFI_STATUS
 __forceinline
 ShvOsErrorToError (
@@ -153,16 +163,228 @@ __lgdt (
     AsmWriteGdtr(Gdtr);
 }
 
+INT32
+ShvOsBuildHostState(
+    _In_ PSHV_VP_DATA VpData
+)
+{
+    //
+    // === Host Page Tables (identity map, 2MB large pages) ===
+    //
+    // SDM Vol 3, 27.5.4: HOST_CR3 is loaded on every VM-exit.
+    // We need our own page tables in RuntimeServices memory
+    // so they survive ExitBootServices.
+    //
+    // Structure: PML4 -> 512 PDPTs -> 512*512 PDEs
+    // Covers 512 GB which is sufficient for physical RAM access.
+    //
+
+    UINT64* pml4 = AllocateRuntimeZeroPool(PAGE_SIZE);
+    UINT64* pdpt = AllocateRuntimeZeroPool(PAGE_SIZE);
+    UINT64* pd = AllocateRuntimeZeroPool(512 * PAGE_SIZE);
+    if (pml4 == NULL || pdpt == NULL || pd == NULL)
+    {
+        return SHV_STATUS_NO_RESOURCES;
+    }
+
+    //
+    // PML4[0] -> PDPT
+    //
+    pml4[0] = (UINT64)pdpt | 0x3;  // Present | RW
+    //
+    // PDPT[i] -> PD[i]
+    //
+    for (UINT32 i = 0; i < 512; i++)
+    {
+        pdpt[i] = ((UINT64)pd + i * PAGE_SIZE) | 0x3;  // Present | RW
+    }
+    //
+    // PD[i][j] -> 2MB identity map
+    // Each entry: Present | RW | PS (bit 7 = large page)
+    //
+    for (UINT32 i = 0; i < 512; i++)
+    {
+        UINT64* table = (UINT64*)((UINT8*)pd + i * PAGE_SIZE);
+        for (UINT32 j = 0; j < 512; j++)
+        {
+            UINT64 physAddr = ((UINT64)i * 512 + j) * _2MB;
+            table[j] = physAddr | 0x83;  // Present | RW | PS
+        }
+    }
+    VpData->HostCr3 = (UINT64)pml4;
+
+    //
+    // === Host IDT ===
+    //
+    // SDM Vol 3, 27.5.3: HOST_IDTR_BASE loaded on exit, limit
+    // forced to 0xFFFF. We need at minimum a vector 2 (NMI) entry
+    // to avoid triple-fault if NMI fires during hypervisor execution.
+    //
+    // For simplicity, allocate a zeroed IDT. An unhandled interrupt
+    // in the host will triple-fault, but that only happens if NMI
+    // fires in the tiny window between VM-exit and VMRESUME.
+    // A proper NMI gate can be added later.
+    //
+    VpData->HostIdtBase = AllocateRuntimeZeroPool(PAGE_SIZE);
+    if (VpData->HostIdtBase == NULL)
+    {
+        return SHV_STATUS_NO_RESOURCES;
+    }
+    return SHV_STATUS_SUCCESS;
+}
+
 VOID
 ShvOsUnprepareProcessor (
     _In_ PSHV_VP_DATA VpData
     )
 {
     UNREFERENCED_PARAMETER(VpData);
-
+    
     //
     // Nothing to do
     //
+}
+
+UINT64*
+ShvCopyPageTableLevel (
+    _In_ UINT64* SourceTable,
+    _In_ UINT32 Level
+    )
+{    
+    UINT64* newTable;
+    UINT32 i;
+    //
+    // Allocate a runtime copy of this table page
+    //
+    newTable = AllocateRuntimeZeroPool(PAGE_SIZE);
+    if (newTable == NULL)
+    {
+        return NULL;
+    }
+    //
+    // Copy the raw content first (preserves all flags/bits)
+    //
+    CopyMem(newTable, SourceTable, PAGE_SIZE);
+
+    //
+    // If we're at the lowest level that has children (Level 1 = PT),
+    // the entries point to actual 4KB data pages, not sub-tables.
+    // We don't copy data pages -- only table pages. So stop recursing.
+    //
+    if (Level == 1)
+    {
+        return newTable;
+    }
+
+    //
+    // Walk each of the 512 entries in this table
+    //
+    for (i = 0; i < 512; i++)
+    {
+        //
+        // Skip non-present entries -- nothing to copy
+        //
+        if ((newTable[i] & PTE_PRESENT) == 0)
+        {
+            continue;
+        }
+
+        //
+        // Large/huge page entries are leaf entries (1GB at PDPT level,
+        // 2MB at PD level). They map physical memory directly and have
+        // no child table to copy. Skip them.
+        //
+        // Level 4 = PML4 (never large)
+        // Level 3 = PDPT (bit 7 = 1GB huge page)
+        // Level 2 = PD   (bit 7 = 2MB large page)
+        // Level 1 = PT   (always leaf, handled above)
+        //
+        if ((Level <= 3) && (newTable[i] & PTE_LARGE))
+        {
+            continue;
+        }
+
+        //
+        // This entry points to a child table. Get its physical address,
+        // which under UEFI identity mapping IS the virtual address.
+        //
+        UINT64 childPhys = newTable[i] & PTE_PFN_MASK;
+        UINT64* childTable = PA_TO_PTR(childPhys);
+
+        //
+        // Recursively copy the child table
+        //
+        UINT64* newChild = ShvCopyPageTableLevel(childTable, Level - 1);
+        if (newChild == NULL)
+        {
+            //
+            // Allocation failed. In a simple implementation, we just bail.
+            // The partially copied tree will leak runtime pages, which is
+            // acceptable for a simple hypervisor.
+            //
+            FreePool(newTable);
+            return NULL;
+        }
+
+        //
+        // Rewrite this entry to point to the copy instead of the original.
+        // Preserve all flag bits (low 12 and high bits), replace only the PFN.
+        //
+        newTable[i] = ((UINT64)(UINTN)newChild & PTE_PFN_MASK) |
+                      (newTable[i] & ~PTE_PFN_MASK);
+    }
+
+    return newTable;
+}
+
+INT32
+ShvCopyPageTables (
+    _In_ PSHV_VP_DATA VpData
+    )
+{
+    UINT64 cr3 = __readcr3();
+    UINT64 cr4 = __readcr4();
+    UINT64* rootTable;
+    UINT64* newRoot;
+    UINT32 levels;
+
+    //
+    // Determine paging depth.
+    // CR4.LA57 (bit 12) indicates 5-level paging (PML5).
+    // Most systems use 4-level (PML4).
+    //
+    if (cr4 & (1ULL << 12))
+    {
+        levels = 5;
+    }
+    else
+    {
+        levels = 4;
+    }
+
+    //
+    // CR3 contains the physical address of the root table.
+    // Under UEFI identity mapping, physical == virtual.
+    // Mask off the PCID/flag bits in CR3 (low 12 bits for non-PCID,
+    // though UEFI typically doesn't use PCID).
+    //
+    rootTable = PA_TO_PTR(cr3 & PTE_PFN_MASK);
+
+    //
+    // Deep-copy the entire page table tree
+    //
+    newRoot = ShvCopyPageTableLevel(rootTable, levels);
+    if (newRoot == NULL)
+    {
+        return SHV_STATUS_NO_RESOURCES;
+    }
+
+    //
+    // Store the physical address of our copy.
+    // Under identity mapping, the pointer IS the physical address.
+    //
+    VpData->HostCr3 = (UINT64)(UINTN)newRoot;
+    return SHV_STATUS_SUCCESS;
 }
 
 INT32
@@ -172,7 +394,10 @@ ShvOsPrepareProcessor (
 {
     PKGDTENTRY64 TssEntry, NewGdt;
     PKTSS64 Tss;
-    KDESCRIPTOR Gdtr;
+    KDESCRIPTOR Gdtr, Idtr;
+    void* NewIdt;
+    INT32 status;
+
 
     //
     // Clear AC in case it's not been reset yet
@@ -238,7 +463,25 @@ ShvOsPrepareProcessor (
     // Load the task register
     //
     _ltr(KGDT64_SYS_TSS);
-    return SHV_STATUS_SUCCESS;
+
+    __sidt(&Idtr.Limit);
+
+    NewIdt = AllocateRuntimeZeroPool(Idtr.Limit + 1);
+    if (NewIdt == NULL)
+    {
+        return SHV_STATUS_NO_RESOURCES;
+    }
+
+    CopyMem(NewIdt, Idtr.Base, Idtr.Limit + 1);
+    VpData->HostIdtBase = NewIdt;
+
+        status = ShvCopyPageTables(VpData);
+    if (status != SHV_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    return SHV_STATUS_SUCCESS; 
 }
 
 VOID

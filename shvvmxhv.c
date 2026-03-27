@@ -184,20 +184,30 @@ ShvVmxHandleNmi(
     _In_ PSHV_VP_STATE VpState
 )
 {
-    UNREFERENCED_PARAMETER(VpState);
+    //
+    // SDM Vol 3, Section 27.2.2: VM-exit interruption information
+    // Bits 7:0 = vector, Bits 10:8 = type, Bit 31 = valid
+    //
+    UINT32 interruptInfo = (UINT32)ShvVmxRead(VM_EXIT_INTR_INFO);
+    UINT8 vector = interruptInfo & 0xFF;
+    UINT8 type = (interruptInfo >> 8) & 0x7;
 
+    if (vector == 2 && type == 2)  // NMI (vector 2, type=NMI)
+    {
+        //
+        // Re-inject NMI into the guest.
+        // SDM Vol 3, 24.8.3: VM-entry interruption info format
+        //   Bits 7:0 = vector (2)
+        //   Bits 10:8 = type (2 = NMI)
+        //   Bit 31 = valid
+        //
+        __vmx_vmwrite(VM_ENTRY_INTR_INFO,
+                      2 | (2 << 8) | (1u << 31));
+    }
     //
-    // An NMI caused a VM exit. We must re-inject it into the guest so that the
-    // operating system's NMI handler (crash dump, watchdog, profiling, etc.)
-    // executes correctly.
+    // Don't advance RIP for exceptions/NMIs
     //
-    // The VM-Entry interruption-information field format:
-    //   Bits 7:0   = Vector (2 for NMI)
-    //   Bits 10:8  = Type (2 = NMI)
-    //   Bit 31     = Valid
-    //
-    __vmx_vmwrite(VM_ENTRY_INTR_INFO,
-        INTR_INFO_VALID_BIT | INTR_TYPE_NMI | VECTOR_NMI);
+    return;
 }
 
 VOID
@@ -229,6 +239,9 @@ ShvVmxHandleExit (
     //
     switch (VpState->ExitReason)
     {
+    case EXIT_REASON_EXCEPTION_NMI:
+        ShvVmxHandleNmi(VpState);
+        return;
     case EXIT_REASON_CPUID:
         ShvVmxHandleCpuid(VpState);
         break;
@@ -250,31 +263,9 @@ ShvVmxHandleExit (
     case EXIT_REASON_VMXON:
         ShvVmxHandleVmx(VpState);
         break;
-    case EXIT_REASON_EXCEPTION_NMI:
-        ShvVmxHandleNmi(VpState);
-        return;
-    case EXIT_REASON_EXTERNAL_INTERRUPT:
-        ShvVmxHandleExternalInterrupt(VpState);
-        return;
-    case EXIT_REASON_TRIPLE_FAULT:
-        //
-        // Triple fault in guest -- nothing we can do, don't advance RIP.
-        //
-        return;
-    case EXIT_REASON_EPT_VIOLATION:
-    case EXIT_REASON_EPT_MISCONFIG:
-        //
-        // EPT violation or misconfiguration. Shouldn't happen with our
-        // identity-mapped EPT covering 512GB. Don't advance RIP.
-        //
-        return;
     default:
-        //
-        // Unexpected exit reason. Do NOT advance RIP.
-        //
-        return;
+        break;
     }
-
     //
     // Move the instruction pointer to the next instruction after the one that
     // caused the exit. Since we are not doing any special handling or changing
