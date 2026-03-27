@@ -28,6 +28,10 @@ Environment:
 #include <Library/DebugLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Protocol/SimpleFileSystem.h>
+#include <Protocol/LoadedImage.h>
+#include <Protocol/DevicePath.h>
+#include <Guid/FileInfo.h>
 
 //
 // Boot and Runtime Services
@@ -694,6 +698,164 @@ UefiUnload (
 }
 
 EFI_STATUS
+ShvOsBootWindows(
+    _In_ EFI_HANDLE ImageHandle
+)
+{
+    EFI_STATUS status;
+    EFI_LOADED_IMAGE_PROTOCOL* loadedImage;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* fileSystem;
+    EFI_FILE_PROTOCOL* rootDir;
+    EFI_FILE_PROTOCOL* bootFile;
+    EFI_HANDLE newImageHandle;
+    VOID* fileBuffer;
+    UINTN fileSize;
+    EFI_FILE_INFO* fileInfo;
+    UINTN infoSize;
+
+    //
+    // Get our own loaded image protocol — we need the device handle
+    // to know which disk/partition we came from. Typically SimpleVisor
+    // lives on the same ESP as bootmgfw.efi.
+    //
+    status = gBS->HandleProtocol(ImageHandle,
+        &gEfiLoadedImageProtocolGuid,
+        (VOID**)&loadedImage);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Failed to get LoadedImage: %r\n", status);
+        return status;
+    }
+
+    //
+    // Open the filesystem on the same partition we loaded from
+    //
+    status = gBS->HandleProtocol(loadedImage->DeviceHandle,
+        &gEfiSimpleFileSystemProtocolGuid,
+        (VOID**)&fileSystem);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Failed to get FileSystem: %r\n", status);
+        return status;
+    }
+
+    //
+    // Open the root directory
+    //
+    status = fileSystem->OpenVolume(fileSystem, &rootDir);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Failed to open volume: %r\n", status);
+        return status;
+    }
+
+    //
+    // Open bootmgfw.efi — the Windows Boot Manager
+    //
+    status = rootDir->Open(rootDir,
+        &bootFile,
+        L"\\EFI\\Microsoft\\Boot\\bootmgfwx.efi",
+        EFI_FILE_MODE_READ,
+        0);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Failed to open bootmgfw.efi: %r\n", status);
+        rootDir->Close(rootDir);
+        return status;
+    }
+
+    //
+    // Get file size
+    //
+    infoSize = 0;
+    bootFile->GetInfo(bootFile, &gEfiFileInfoGuid, &infoSize, NULL);
+    fileInfo = AllocatePool(infoSize);
+    if (fileInfo == NULL)
+    {
+        bootFile->Close(bootFile);
+        rootDir->Close(rootDir);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    status = bootFile->GetInfo(bootFile, &gEfiFileInfoGuid,
+        &infoSize, fileInfo);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Failed to get file info: %r\n", status);
+        FreePool(fileInfo);
+        bootFile->Close(bootFile);
+        rootDir->Close(rootDir);
+        return status;
+    }
+
+    fileSize = (UINTN)fileInfo->FileSize;
+    FreePool(fileInfo);
+
+    //
+    // Read the entire file into memory
+    //
+    fileBuffer = AllocatePool(fileSize);
+    if (fileBuffer == NULL)
+    {
+        bootFile->Close(bootFile);
+        rootDir->Close(rootDir);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    status = bootFile->Read(bootFile, &fileSize, fileBuffer);
+    bootFile->Close(bootFile);
+    rootDir->Close(rootDir);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Failed to read bootmgfw.efi: %r\n", status);
+        FreePool(fileBuffer);
+        return status;
+    }
+
+    //
+    // Load the image into UEFI's image management
+    //
+    status = gBS->LoadImage(FALSE,
+        ImageHandle,
+        NULL,
+        fileBuffer,
+        fileSize,
+        &newImageHandle);
+    FreePool(fileBuffer);
+    if (EFI_ERROR(status))
+    {
+        Print(L"Failed to load image: %r\n", status);
+        return status;
+    }
+
+    //
+    // Set the device path on the loaded image so Windows knows
+    // which partition it came from (needed for BCD store access)
+    //
+    EFI_LOADED_IMAGE_PROTOCOL* newLoadedImage;
+    status = gBS->HandleProtocol(newImageHandle,
+        &gEfiLoadedImageProtocolGuid,
+        (VOID**)&newLoadedImage);
+    if (!EFI_ERROR(status))
+    {
+        newLoadedImage->DeviceHandle = loadedImage->DeviceHandle;
+    }
+
+    //
+    // Start Windows Boot Manager.
+    // This call does not return if Windows boots successfully.
+    //
+    Print(L"Starting Windows Boot Manager...\n");
+    status = gBS->StartImage(newImageHandle, NULL, NULL);
+
+    //
+    // If we get here, bootmgfw.efi returned (error or exit)
+    //
+    Print(L"bootmgfwx.efi returned: %r\n", status);
+    return status;
+}
+
+EFI_STATUS
 EFIAPI
 UefiMain (
     IN EFI_HANDLE ImageHandle,
@@ -701,60 +863,43 @@ UefiMain (
     )
 {
     EFI_STATUS efiStatus;
-    EFI_LOADED_IMAGE_PROTOCOL* loadedImage;
+
     //
-    // Find the PI MpService protocol used for multi-processor startup
+    // Find the PI MpService protocol
     //
     efiStatus = gBS->LocateProtocol(&gEfiMpServiceProtocolGuid,
-                                    NULL,
-                                    &_gPiMpService);
+        NULL,
+        &_gPiMpService);
     if (EFI_ERROR(efiStatus))
     {
-        Print(L"Unable to locate the MpServices protocol: %r\n", efiStatus);
+        Print(L"Unable to locate MpServices: %r\n", efiStatus);
         return efiStatus;
     }
 
     //
-// Get our loaded image information so we know our base address and size.
-// We need this to protect our image memory from being reclaimed after
-// ExitBootServices.
-//
-    efiStatus = gBS->HandleProtocol(ImageHandle,
-        &gEfiLoadedImageProtocolGuid,
-        (VOID**)&loadedImage);
+    // Hyperjack the BSP
+    //
+    efiStatus = ShvOsErrorToError(ShvLoad());
     if (EFI_ERROR(efiStatus))
     {
-        Print(L"Unable to get loaded image protocol: %r\n", efiStatus);
+        Print(L"Failed to load hypervisor: %r\n", efiStatus);
         return efiStatus;
     }
 
-    _gImageBase = (EFI_PHYSICAL_ADDRESS)loadedImage->ImageBase;
-    _gImageSize = loadedImage->ImageSize;
+    Print(L"Hypervisor loaded. Chainloading Windows...\n");
 
     //
-    // Protect our image memory by converting it from EfiBootServicesCode to
-    // EfiRuntimeServicesCode in the firmware's memory map. This must be done
-    // BEFORE the OS loader calls GetMemoryMap.
+    // Now boot Windows — we're running as a guest from here on.
+    // This should not return.
     //
-    ShvProtectImageMemory();
+    efiStatus = ShvOsBootWindows(ImageHandle);
 
     //
-    // Hook ExitBootServices as an additional safety net.
+    // If we got here, Windows failed to start.
+    // Unload the hypervisor and return to UEFI shell.
     //
-    _gOriginalExitBootServices = gBS->ExitBootServices;
-    gBS->ExitBootServices = ShvExitBootServicesHook;
-
-    if (EFI_ERROR(efiStatus))
-    {
-        //
-        // If we failed to load, restore ExitBootServices to the original
-        //
-        gBS->ExitBootServices = _gOriginalExitBootServices;
-    }
-
-    //
-    // Call the hypervisor entrypoint
-    //
-    return ShvOsErrorToError(ShvLoad());
+    Print(L"Windows boot failed: %r\n", efiStatus);
+    ShvUnload();
+    return efiStatus;
 }
 
