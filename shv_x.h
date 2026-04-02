@@ -81,6 +81,7 @@ typedef struct _SHV_VP_DATA
             UINT64 MsrBitmapPhysicalAddress;
             UINT64 EptPml4PhysicalAddress;
             UINT32 EptControls;
+            UINT64 HostIdtBase;
         };
     };
 

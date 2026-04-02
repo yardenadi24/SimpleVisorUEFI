@@ -155,6 +155,117 @@ ShvOsUnprepareProcessor (
 }
 
 INT32
+ShvOsBuildHostPageTables (
+    _In_ PSHV_VP_DATA VpData
+    )
+{
+    UINT64 *Pml4, *Pdpt, *Pd;
+    UINT32 i, j;
+
+    //
+    // The UEFI firmware's page tables (CR3) reside in EfiBootServicesData
+    // memory and will be freed after ExitBootServices. The hypervisor's
+    // HOST_CR3 must point to page tables that persist in runtime memory.
+    // Build identity-mapped (virtual == physical) page tables using 2MB
+    // large pages, covering the first 512GB of physical address space.
+    //
+
+    //
+    // Allocate PML4 (1 page)
+    //
+    Pml4 = AllocateAlignedRuntimePages(1, EFI_PAGE_SIZE);
+    if (Pml4 == NULL)
+    {
+        return SHV_STATUS_NO_RESOURCES;
+    }
+    ZeroMem(Pml4, EFI_PAGE_SIZE);
+
+    //
+    // Allocate PDPT (1 page, 512 entries covering 512GB)
+    //
+    Pdpt = AllocateAlignedRuntimePages(1, EFI_PAGE_SIZE);
+    if (Pdpt == NULL)
+    {
+        FreeAlignedPages(Pml4, 1);
+        return SHV_STATUS_NO_RESOURCES;
+    }
+    ZeroMem(Pdpt, EFI_PAGE_SIZE);
+
+    //
+    // Allocate PD pages (512 pages, each with 512 entries of 2MB pages)
+    //
+    Pd = AllocateAlignedRuntimePages(PDPTE_ENTRY_COUNT, EFI_PAGE_SIZE);
+    if (Pd == NULL)
+    {
+        FreeAlignedPages(Pml4, 1);
+        FreeAlignedPages(Pdpt, 1);
+        return SHV_STATUS_NO_RESOURCES;
+    }
+    ZeroMem(Pd, PDPTE_ENTRY_COUNT * EFI_PAGE_SIZE);
+
+    //
+    // PML4[0] -> PDPT (Present | Read/Write)
+    //
+    Pml4[0] = (UINT64)Pdpt | 0x23;
+
+    //
+    // Fill PDPT entries, each pointing to a PD page
+    //
+    for (i = 0; i < PDPTE_ENTRY_COUNT; i++)
+    {
+        Pdpt[i] = ((UINT64)Pd + (i * EFI_PAGE_SIZE)) | 0x23;
+    }
+
+    //
+    // Fill PD entries with 2MB identity-mapped large pages
+    // Each entry: Present | Read/Write | Page Size (2MB)
+    //
+    for (i = 0; i < PDPTE_ENTRY_COUNT; i++)
+    {
+        UINT64 *PdPage = (UINT64*)((UINT64)Pd + (i * EFI_PAGE_SIZE));
+        for (j = 0; j < PDE_ENTRY_COUNT; j++)
+        {
+            UINT64 PhysAddr = ((UINT64)i * PDE_ENTRY_COUNT + j) * _2MB;
+            PdPage[j] = PhysAddr | 0x83;
+        }
+    }
+
+    //
+    // Override SystemDirectoryTableBase with our runtime page tables.
+    // In UEFI identity mapping, virtual address == physical address.
+    //
+    VpData->SystemDirectoryTableBase = (UINT64)Pml4;
+    return SHV_STATUS_SUCCESS;
+}
+
+INT32
+ShvOsBuildHostIdt (
+    _In_ PSHV_VP_DATA VpData
+    )
+{
+    VOID *HostIdt;
+
+    //
+    // The UEFI firmware's IDT resides in boot services memory and will be
+    // destroyed after ExitBootServices. Allocate a host IDT in runtime memory.
+    // The hypervisor runs with interrupts disabled, so entries are zeroed --
+    // but the memory itself must be valid to avoid triple faults if an NMI
+    // arrives during VMX root mode execution.
+    //
+    HostIdt = AllocateRuntimeZeroPool(EFI_PAGE_SIZE);
+    if (HostIdt == NULL)
+    {
+        return SHV_STATUS_NO_RESOURCES;
+    }
+
+    //
+    // Store the host IDT base for VMCS HOST_IDTR_BASE
+    //
+    VpData->HostIdtBase = (UINT64)HostIdt;
+    return SHV_STATUS_SUCCESS;
+}
+
+INT32
 ShvOsPrepareProcessor (
     _In_ PSHV_VP_DATA VpData
     )
@@ -162,6 +273,7 @@ ShvOsPrepareProcessor (
     PKGDTENTRY64 TssEntry, NewGdt;
     PKTSS64 Tss;
     KDESCRIPTOR Gdtr;
+    INT32 status;
 
     //
     // Clear AC in case it's not been reset yet
@@ -227,6 +339,28 @@ ShvOsPrepareProcessor (
     // Load the task register
     //
     _ltr(KGDT64_SYS_TSS);
+
+    //
+    // Build identity-mapped host page tables in runtime memory. The UEFI
+    // firmware's CR3 page tables will be destroyed after ExitBootServices,
+    // so HOST_CR3 must point to our own persistent page tables.
+    //
+    status = ShvOsBuildHostPageTables(VpData);
+    if (status != SHV_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
+    //
+    // Build a host IDT in runtime memory. The UEFI firmware's IDT will also
+    // be destroyed after ExitBootServices.
+    //
+    status = ShvOsBuildHostIdt(VpData);
+    if (status != SHV_STATUS_SUCCESS)
+    {
+        return status;
+    }
+
     return SHV_STATUS_SUCCESS;
 }
 
