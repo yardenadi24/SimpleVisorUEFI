@@ -446,34 +446,49 @@ ShvVmxHandleExit (
         UINT32 accessType = (UINT32)((qual >> 4) & 0x3);
         UINT32 reg = (UINT32)((qual >> 8) & 0xF);
 
-        if (crNum == 3 && accessType == 0)
+        //
+        // Helper: read value from general purpose register by index
+        //
         {
-            //
-            // MOV to CR3: read the new value from the source register
-            // and write it to the VMCS guest CR3 field.
-            //
-            UINT64 newCr3;
+            UINT64 regVal = 0;
             switch (reg)
             {
-            case 0:  newCr3 = VpState->VpRegs->Rax; break;
-            case 1:  newCr3 = VpState->VpRegs->Rcx; break;
-            case 2:  newCr3 = VpState->VpRegs->Rdx; break;
-            case 3:  newCr3 = VpState->VpRegs->Rbx; break;
-            case 4:  newCr3 = VpState->GuestRsp; break;
-            case 5:  newCr3 = VpState->VpRegs->Rbp; break;
-            case 6:  newCr3 = VpState->VpRegs->Rsi; break;
-            case 7:  newCr3 = VpState->VpRegs->Rdi; break;
-            case 8:  newCr3 = VpState->VpRegs->R8; break;
-            case 9:  newCr3 = VpState->VpRegs->R9; break;
-            case 10: newCr3 = VpState->VpRegs->R10; break;
-            case 11: newCr3 = VpState->VpRegs->R11; break;
-            case 12: newCr3 = VpState->VpRegs->R12; break;
-            case 13: newCr3 = VpState->VpRegs->R13; break;
-            case 14: newCr3 = VpState->VpRegs->R14; break;
-            case 15: newCr3 = VpState->VpRegs->R15; break;
-            default: newCr3 = 0; break;
+            case 0:  regVal = VpState->VpRegs->Rax; break;
+            case 1:  regVal = VpState->VpRegs->Rcx; break;
+            case 2:  regVal = VpState->VpRegs->Rdx; break;
+            case 3:  regVal = VpState->VpRegs->Rbx; break;
+            case 4:  regVal = VpState->GuestRsp; break;
+            case 5:  regVal = VpState->VpRegs->Rbp; break;
+            case 6:  regVal = VpState->VpRegs->Rsi; break;
+            case 7:  regVal = VpState->VpRegs->Rdi; break;
+            case 8:  regVal = VpState->VpRegs->R8; break;
+            case 9:  regVal = VpState->VpRegs->R9; break;
+            case 10: regVal = VpState->VpRegs->R10; break;
+            case 11: regVal = VpState->VpRegs->R11; break;
+            case 12: regVal = VpState->VpRegs->R12; break;
+            case 13: regVal = VpState->VpRegs->R13; break;
+            case 14: regVal = VpState->VpRegs->R14; break;
+            case 15: regVal = VpState->VpRegs->R15; break;
             }
-            __vmx_vmwrite(GUEST_CR3, newCr3);
+
+            if (crNum == 3 && accessType == 0)
+            {
+                //
+                // MOV to CR3: write new value to VMCS guest CR3
+                //
+                __vmx_vmwrite(GUEST_CR3, regVal);
+            }
+            else if (crNum == 4 && accessType == 0)
+            {
+                //
+                // MOV to CR4: guest-host mask traps VMXE bit writes.
+                // Apply the new value but keep VMXE set (needed for VMX).
+                // Update the read shadow without VMXE so guest reads see
+                // its intended value.
+                //
+                __vmx_vmwrite(GUEST_CR4, regVal | 0x2000);
+                __vmx_vmwrite(CR4_READ_SHADOW, regVal & ~0x2000ULL);
+            }
         }
         break;
     }
