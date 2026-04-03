@@ -191,10 +191,10 @@ ShvVmxHandleExit (
 {
     //
     // This is the generic VM-Exit handler. Decode the reason for the exit and
-    // call the appropriate handler. As per Intel specifications, given that we
-    // have requested no optional exits whatsoever, we should only see CPUID,
-    // INVD, XSETBV and other VMX instructions. GETSEC cannot happen as we do
-    // not run in SMX context.
+    // call the appropriate handler. Instruction-based exits (CPUID, INVD,
+    // XSETBV, VMX) advance RIP past the instruction. Event-based exits
+    // (external interrupts, NMIs, exceptions) must NOT advance RIP -- they
+    // are re-injected into the guest instead.
     //
     switch (VpState->ExitReason)
     {
@@ -219,14 +219,56 @@ ShvVmxHandleExit (
     case EXIT_REASON_VMXON:
         ShvVmxHandleVmx(VpState);
         break;
+
+    case EXIT_REASON_EXTERNAL_INTERRUPT:
+    case EXIT_REASON_EXCEPTION_NMI:
+    {
+        //
+        // External interrupts and NMIs may arrive if the processor forces
+        // external-interrupt exiting or NMI exiting as must-be-1 pin-based
+        // controls (common in nested virtualization). With ACK_INTR_ON_EXIT
+        // enabled, VM_EXIT_INTR_INFO contains the acknowledged vector.
+        // Re-inject it into the guest via VM_ENTRY_INTR_INFO so the guest
+        // OS receives the interrupt/NMI transparently.
+        //
+        uintptr_t intrInfo = ShvVmxRead(VM_EXIT_INTR_INFO);
+
+        //
+        // Re-inject: copy the interrupt info (vector, type, valid bit)
+        //
+        __vmx_vmwrite(VM_ENTRY_INTR_INFO, intrInfo);
+
+        //
+        // If the exit info indicates an error code is valid (bit 11),
+        // pass the error code through as well (for hardware exceptions).
+        //
+        if (intrInfo & (1ULL << 11))
+        {
+            __vmx_vmwrite(VM_ENTRY_EXCEPTION_ERROR_CODE,
+                          ShvVmxRead(VM_EXIT_INTR_ERROR_CODE));
+            __vmx_vmwrite(VM_ENTRY_INSTRUCTION_LEN,
+                          ShvVmxRead(VM_EXIT_INSTRUCTION_LEN));
+        }
+
+        //
+        // Do NOT advance RIP -- these are asynchronous events that should
+        // be delivered at the interrupted instruction, not past it.
+        //
+        return;
+    }
+
     default:
-        break;
+        //
+        // Unknown/unexpected exit reason. Do not advance RIP as the exit
+        // may not be instruction-based. Just resume the guest.
+        //
+        return;
     }
 
     //
     // Move the instruction pointer to the next instruction after the one that
-    // caused the exit. Since we are not doing any special handling or changing
-    // of execution, this can be done for any exit reason.
+    // caused the exit. This is ONLY done for instruction-based exits above
+    // (CPUID, INVD, XSETBV, VMX instructions).
     //
     VpState->GuestRip += ShvVmxRead(VM_EXIT_INSTRUCTION_LEN);
     __vmx_vmwrite(GUEST_RIP, VpState->GuestRip);
