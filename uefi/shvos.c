@@ -716,8 +716,12 @@ UefiMain (
     SerialPrint("\n");
 
     //
-    // Start the hypervisor
+    // Start the hypervisor.
+    // To test chain-loading WITHOUT the hypervisor (diagnostic), change 0 to 1:
     //
+#if 0
+    SerialPrint("[SHV] *** HYPERVISOR SKIPPED (test mode) ***\n");
+#else
     SerialPrint("[SHV] Calling ShvLoad()...\n");
     efiStatus = ShvOsErrorToError(ShvLoad());
     if (EFI_ERROR(efiStatus))
@@ -729,6 +733,7 @@ UefiMain (
 
     SerialPrint("[SHV] *** Hypervisor loaded successfully ***\n");
     Print(L"SHV: Hypervisor loaded successfully.\n");
+#endif
 
     //
     // Chain-load the real Windows Boot Manager (bootmgfwx.efi)
