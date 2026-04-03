@@ -430,14 +430,64 @@ ShvVmxHandleExit (
     case EXIT_REASON_EXCEPTION_NMI:
     {
         //
-        // NMI or hardware exception. Re-inject into the guest.
+        // Exception or NMI. Log it for diagnostics, then re-inject.
         //
+        static const char* excNames[] = {
+            "#DE","#DB","NMI","#BP","#OF","#BR","#UD","#NM",
+            "#DF","??","#TS","#NP","#SS","#GP","#PF","??",
+            "#MF","#AC","#MC","#XM","#VE","#CP","??","??",
+            "??","??","??","??","#HV","#VC","#SX","??"
+        };
         uintptr_t intrInfo = ShvVmxRead(VM_EXIT_INTR_INFO);
+        UINT8 vector = (UINT8)(intrInfo & 0xFF);
+        UINT8 type = (UINT8)((intrInfo >> 8) & 0x7);
+
+        //
+        // Log exception details (first 500, then every 100th)
+        //
+        {
+            static volatile long excCount = 0;
+            long ec = _InterlockedIncrement(&excCount);
+            if (ec <= 500 || (ec % 100) == 0)
+            {
+                HvSerialPrint("[HV] EXCEPTION ");
+                HvSerialPrint(vector < 32 ? excNames[vector] : "??");
+                HvSerialPrint(" vec=");
+                HvSerialPrintHex(vector);
+                HvSerialPrint(" type=");
+                HvSerialPrintHex(type);
+                HvSerialPrint(" rip=");
+                HvSerialPrintHex(VpState->GuestRip);
+                if (intrInfo & (1ULL << 11))
+                {
+                    HvSerialPrint(" err=");
+                    HvSerialPrintHex(ShvVmxRead(VM_EXIT_INTR_ERROR_CODE));
+                }
+                HvSerialPrint(" cr2=");
+                HvSerialPrintHex(__readcr2());
+                HvSerialPrint(" #");
+                HvSerialPrintHex(ec);
+                HvSerialPrint("\n");
+            }
+        }
+
+        //
+        // Re-inject into the guest transparently
+        //
         __vmx_vmwrite(VM_ENTRY_INTR_INFO, intrInfo & 0x80000FFF);
         if (intrInfo & (1ULL << 11))
         {
             __vmx_vmwrite(VM_ENTRY_EXCEPTION_ERROR_CODE,
                           ShvVmxRead(VM_EXIT_INTR_ERROR_CODE));
+        }
+
+        //
+        // For software exceptions (#BP, #OF) and INT n, set instruction length
+        //
+        if (type >= 4 && type <= 6)
+        {
+            __vmx_vmwrite(VM_ENTRY_INSTRUCTION_LEN,
+                          ShvVmxRead(VM_EXIT_INSTRUCTION_LEN));
         }
         return;
     }
