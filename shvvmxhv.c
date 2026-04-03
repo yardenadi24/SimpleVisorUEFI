@@ -22,6 +22,48 @@ Environment:
 
 #include "shv.h"
 
+//
+// Minimal serial output for VM-Exit handler debugging (COM2 = 0x2F8).
+// These are inline to avoid any stack/calling-convention issues in VMX root.
+//
+#define SHV_SERIAL_PORT 0x2F8
+
+static void __forceinline
+HvSerialPutChar (
+    _In_ char c
+    )
+{
+    while ((__inbyte(SHV_SERIAL_PORT + 5) & 0x20) == 0);
+    __outbyte(SHV_SERIAL_PORT, (unsigned char)c);
+}
+
+static void __forceinline
+HvSerialPrint (
+    _In_ const char* s
+    )
+{
+    while (*s)
+    {
+        if (*s == '\n') HvSerialPutChar('\r');
+        HvSerialPutChar(*s++);
+    }
+}
+
+static void __forceinline
+HvSerialPrintHex (
+    _In_ UINT64 v
+    )
+{
+    const char hex[] = "0123456789ABCDEF";
+    char buf[19];
+    int i;
+    buf[0] = '0'; buf[1] = 'x';
+    for (i = 0; i < 16; i++)
+        buf[2 + i] = hex[(v >> (60 - i * 4)) & 0xF];
+    buf[18] = '\0';
+    HvSerialPrint(buf);
+}
+
 DECLSPEC_NORETURN
 VOID
 ShvVmxResume (
@@ -190,6 +232,28 @@ ShvVmxHandleExit (
     )
 {
     //
+    // Log exit reasons to serial for debugging. Use a static counter to
+    // only log the first handful of each type to avoid flooding serial.
+    //
+    static volatile long exitCount = 0;
+    long count = _InterlockedIncrement(&exitCount);
+    if (count <= 50 || (count % 10000) == 0)
+    {
+        HvSerialPrint("[HV] EXIT reason=");
+        HvSerialPrintHex(VpState->ExitReason);
+        HvSerialPrint(" rip=");
+        HvSerialPrintHex(VpState->GuestRip);
+        if (VpState->ExitReason <= 1)
+        {
+            HvSerialPrint(" intrInfo=");
+            HvSerialPrintHex(ShvVmxRead(VM_EXIT_INTR_INFO));
+        }
+        HvSerialPrint(" #");
+        HvSerialPrintHex(count);
+        HvSerialPrint("\n");
+    }
+
+    //
     // This is the generic VM-Exit handler. Decode the reason for the exit and
     // call the appropriate handler. Instruction-based exits (CPUID, INVD,
     // XSETBV, VMX) advance RIP past the instruction. Event-based exits
@@ -221,39 +285,29 @@ ShvVmxHandleExit (
         break;
 
     case EXIT_REASON_EXTERNAL_INTERRUPT:
+    {
+        //
+        // External interrupt. With ACK_INTR_ON_EXIT enabled, the vector
+        // is in VM_EXIT_INTR_INFO. Re-inject into the guest.
+        // Mask to bits 0-11 and bit 31 (valid) to avoid reserved bit issues.
+        //
+        uintptr_t intrInfo = ShvVmxRead(VM_EXIT_INTR_INFO);
+        __vmx_vmwrite(VM_ENTRY_INTR_INFO, intrInfo & 0x80000FFF);
+        return;
+    }
+
     case EXIT_REASON_EXCEPTION_NMI:
     {
         //
-        // External interrupts and NMIs may arrive if the processor forces
-        // external-interrupt exiting or NMI exiting as must-be-1 pin-based
-        // controls (common in nested virtualization). With ACK_INTR_ON_EXIT
-        // enabled, VM_EXIT_INTR_INFO contains the acknowledged vector.
-        // Re-inject it into the guest via VM_ENTRY_INTR_INFO so the guest
-        // OS receives the interrupt/NMI transparently.
+        // NMI or hardware exception. Re-inject into the guest.
         //
         uintptr_t intrInfo = ShvVmxRead(VM_EXIT_INTR_INFO);
-
-        //
-        // Re-inject: copy the interrupt info (vector, type, valid bit)
-        //
-        __vmx_vmwrite(VM_ENTRY_INTR_INFO, intrInfo);
-
-        //
-        // If the exit info indicates an error code is valid (bit 11),
-        // pass the error code through as well (for hardware exceptions).
-        //
+        __vmx_vmwrite(VM_ENTRY_INTR_INFO, intrInfo & 0x80000FFF);
         if (intrInfo & (1ULL << 11))
         {
             __vmx_vmwrite(VM_ENTRY_EXCEPTION_ERROR_CODE,
                           ShvVmxRead(VM_EXIT_INTR_ERROR_CODE));
-            __vmx_vmwrite(VM_ENTRY_INSTRUCTION_LEN,
-                          ShvVmxRead(VM_EXIT_INSTRUCTION_LEN));
         }
-
-        //
-        // Do NOT advance RIP -- these are asynchronous events that should
-        // be delivered at the interrupted instruction, not past it.
-        //
         return;
     }
 
@@ -262,6 +316,11 @@ ShvVmxHandleExit (
         // Unknown/unexpected exit reason. Do not advance RIP as the exit
         // may not be instruction-based. Just resume the guest.
         //
+        HvSerialPrint("[HV] UNHANDLED EXIT reason=");
+        HvSerialPrintHex(VpState->ExitReason);
+        HvSerialPrint(" rip=");
+        HvSerialPrintHex(VpState->GuestRip);
+        HvSerialPrint("\n");
         return;
     }
 
