@@ -194,12 +194,42 @@ ShvVmxHandleCpuid (
         //
         cpu_info[2] |= HYPERV_HYPERVISOR_PRESENT_BIT;
     }
+    else if (VpState->VpRegs->Rax == HYPERV_CPUID_VENDOR_AND_MAX_FUNCTIONS)
+    {
+        //
+        // Return our max hypervisor CPUID leaf. Only advertise up to
+        // 0x40000001 so Windows does not try to use Hyper-V enlightenments
+        // (synthetic timers, hypercalls, etc.) from the outer hypervisor
+        // that would pass through and not work under SimpleVisor.
+        //
+        cpu_info[0] = HYPERV_CPUID_INTERFACE;
+        cpu_info[1] = 'pmiS';
+        cpu_info[2] = 'iVel';
+        cpu_info[3] = 'ros ';
+    }
     else if (VpState->VpRegs->Rax == HYPERV_CPUID_INTERFACE)
     {
         //
         // Return our interface identifier
         //
         cpu_info[0] = ' vhS';
+        cpu_info[1] = 0;
+        cpu_info[2] = 0;
+        cpu_info[3] = 0;
+    }
+    else if ((VpState->VpRegs->Rax >= HYPERV_CPUID_VENDOR_AND_MAX_FUNCTIONS) &&
+             (VpState->VpRegs->Rax <= HYPERV_CPUID_MAX))
+    {
+        //
+        // For any other hypervisor CPUID leaf (0x40000002+), return zeros.
+        // This prevents Windows from seeing the outer hypervisor's
+        // enlightenment data (features, timers, recommendations) which
+        // would not work through our passthrough hypervisor.
+        //
+        cpu_info[0] = 0;
+        cpu_info[1] = 0;
+        cpu_info[2] = 0;
+        cpu_info[3] = 0;
     }
 
     //
