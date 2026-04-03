@@ -80,9 +80,12 @@ CHAR8 *gEfiCallerBaseName = "SimpleVisor";
 EFI_MP_SERVICES_PROTOCOL* _gPiMpService;
 
 //
-// Serial port I/O for debug output (COM1 = 0x3F8)
+// Serial port I/O for debug output.
+// Use COM2 (0x2F8) to avoid collision with Windows Boot Manager
+// which writes binary debug data to COM1 (0x3F8).
+// Configure your VM to capture COM2 to a separate file.
 //
-#define COM1_PORT   0x3F8
+#define SHV_SERIAL_PORT   0x2F8
 
 VOID
 SerialPutChar (
@@ -92,8 +95,8 @@ SerialPutChar (
     //
     // Wait for transmit holding register to be empty
     //
-    while ((__inbyte(COM1_PORT + 5) & 0x20) == 0);
-    __outbyte(COM1_PORT, (UINT8)c);
+    while ((__inbyte(SHV_SERIAL_PORT + 5) & 0x20) == 0);
+    __outbyte(SHV_SERIAL_PORT, (UINT8)c);
 }
 
 VOID
