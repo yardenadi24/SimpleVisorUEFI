@@ -85,6 +85,23 @@ EFI_MP_SERVICES_PROTOCOL* _gPiMpService;
 #define SHV_SERIAL_PORT   0x3F8
 
 VOID
+SerialPortInitialize (
+    VOID
+    )
+{
+    //
+    // Standard 16550 UART initialization: 115200 baud, 8N1
+    //
+    __outbyte(SHV_SERIAL_PORT + 1, 0x00);   // Disable all interrupts
+    __outbyte(SHV_SERIAL_PORT + 3, 0x80);   // Enable DLAB (set baud rate divisor)
+    __outbyte(SHV_SERIAL_PORT + 0, 0x01);   // Divisor low byte: 115200 baud
+    __outbyte(SHV_SERIAL_PORT + 1, 0x00);   // Divisor high byte
+    __outbyte(SHV_SERIAL_PORT + 3, 0x03);   // 8 bits, no parity, 1 stop bit
+    __outbyte(SHV_SERIAL_PORT + 2, 0xC7);   // Enable FIFO, clear, 14-byte threshold
+    __outbyte(SHV_SERIAL_PORT + 4, 0x0B);   // IRQs enabled, RTS/DSR set
+}
+
+VOID
 SerialPutChar (
     _In_ CHAR8 c
     )
@@ -665,6 +682,7 @@ UefiMain (
 {
     EFI_STATUS efiStatus;
 
+    SerialPortInitialize();
     SerialPrint("\n\n[SHV] ========================================\n");
     SerialPrint("[SHV] SimpleVisor UEFI Hypervisor Starting\n");
     SerialPrint("[SHV] ========================================\n");

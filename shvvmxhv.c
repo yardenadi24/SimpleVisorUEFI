@@ -29,10 +29,30 @@ Environment:
 #define SHV_SERIAL_PORT 0x3F8
 
 static void __forceinline
+HvSerialInit (
+    void
+    )
+{
+    __outbyte(SHV_SERIAL_PORT + 1, 0x00);
+    __outbyte(SHV_SERIAL_PORT + 3, 0x80);
+    __outbyte(SHV_SERIAL_PORT + 0, 0x01);
+    __outbyte(SHV_SERIAL_PORT + 1, 0x00);
+    __outbyte(SHV_SERIAL_PORT + 3, 0x03);
+    __outbyte(SHV_SERIAL_PORT + 2, 0xC7);
+    __outbyte(SHV_SERIAL_PORT + 4, 0x0B);
+}
+
+static volatile long hvSerialInitDone = 0;
+
+static void __forceinline
 HvSerialPutChar (
     _In_ char c
     )
 {
+    if (_InterlockedCompareExchange(&hvSerialInitDone, 1, 0) == 0)
+    {
+        HvSerialInit();
+    }
     while ((__inbyte(SHV_SERIAL_PORT + 5) & 0x20) == 0);
     __outbyte(SHV_SERIAL_PORT, (unsigned char)c);
 }
