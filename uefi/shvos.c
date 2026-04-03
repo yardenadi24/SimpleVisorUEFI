@@ -42,6 +42,14 @@ Environment:
 #include <Protocol/MpService.h>
 
 //
+// Device Path and Loaded Image protocols for chain-loading
+//
+#include <Protocol/LoadedImage.h>
+#include <Protocol/DevicePath.h>
+#include <Guid/FileInfo.h>
+#include <Protocol/SimpleFileSystem.h>
+
+//
 // Variable Arguments (CRT)
 //
 #include <varargs.h>
@@ -502,6 +510,169 @@ UefiUnload (
 }
 
 EFI_STATUS
+ShvOsChainLoadBootManager (
+    IN EFI_HANDLE ImageHandle
+    )
+{
+    EFI_STATUS efiStatus;
+    EFI_LOADED_IMAGE_PROTOCOL* loadedImage;
+    EFI_LOADED_IMAGE_PROTOCOL* newLoadedImage;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* fileSystem;
+    EFI_FILE_PROTOCOL* rootDir;
+    EFI_FILE_PROTOCOL* bootFile;
+    EFI_FILE_INFO* fileInfo;
+    UINTN fileInfoSize;
+    VOID* fileBuffer;
+    UINTN fileSize;
+    EFI_HANDLE newImageHandle;
+
+    //
+    // Get our loaded image protocol to find which device we were loaded from
+    //
+    efiStatus = gBS->HandleProtocol(ImageHandle,
+                                    &gEfiLoadedImageProtocolGuid,
+                                    (VOID**)&loadedImage);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to get loaded image protocol: %r\n", efiStatus);
+        return efiStatus;
+    }
+
+    //
+    // Open the file system on the same device (EFI System Partition)
+    //
+    efiStatus = gBS->HandleProtocol(loadedImage->DeviceHandle,
+                                    &gEfiSimpleFileSystemProtocolGuid,
+                                    (VOID**)&fileSystem);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to get file system protocol: %r\n", efiStatus);
+        return efiStatus;
+    }
+
+    //
+    // Open the root directory
+    //
+    efiStatus = fileSystem->OpenVolume(fileSystem, &rootDir);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to open root directory: %r\n", efiStatus);
+        return efiStatus;
+    }
+
+    //
+    // Open the real Windows Boot Manager (renamed to bootmgfwx.efi)
+    //
+    efiStatus = rootDir->Open(rootDir,
+                              &bootFile,
+                              L"\\EFI\\Microsoft\\Boot\\bootmgfwx.efi",
+                              EFI_FILE_MODE_READ,
+                              0);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to open bootmgfwx.efi: %r\n", efiStatus);
+        rootDir->Close(rootDir);
+        return efiStatus;
+    }
+
+    //
+    // Get the file size
+    //
+    fileInfoSize = 0;
+    efiStatus = bootFile->GetInfo(bootFile, &gEfiFileInfoGuid, &fileInfoSize, NULL);
+    if (efiStatus != EFI_BUFFER_TOO_SMALL)
+    {
+        Print(L"SHV: Failed to query file info size: %r\n", efiStatus);
+        bootFile->Close(bootFile);
+        rootDir->Close(rootDir);
+        return efiStatus;
+    }
+
+    fileInfo = AllocatePool(fileInfoSize);
+    if (fileInfo == NULL)
+    {
+        bootFile->Close(bootFile);
+        rootDir->Close(rootDir);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    efiStatus = bootFile->GetInfo(bootFile, &gEfiFileInfoGuid, &fileInfoSize, fileInfo);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to get file info: %r\n", efiStatus);
+        FreePool(fileInfo);
+        bootFile->Close(bootFile);
+        rootDir->Close(rootDir);
+        return efiStatus;
+    }
+
+    fileSize = (UINTN)fileInfo->FileSize;
+    FreePool(fileInfo);
+
+    //
+    // Allocate a buffer and read the boot manager image
+    //
+    fileBuffer = AllocatePool(fileSize);
+    if (fileBuffer == NULL)
+    {
+        bootFile->Close(bootFile);
+        rootDir->Close(rootDir);
+        return EFI_OUT_OF_RESOURCES;
+    }
+
+    efiStatus = bootFile->Read(bootFile, &fileSize, fileBuffer);
+    bootFile->Close(bootFile);
+    rootDir->Close(rootDir);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to read bootmgfwx.efi: %r\n", efiStatus);
+        FreePool(fileBuffer);
+        return efiStatus;
+    }
+
+    //
+    // Load the real boot manager image from the buffer
+    //
+    efiStatus = gBS->LoadImage(FALSE,
+                               ImageHandle,
+                               NULL,
+                               fileBuffer,
+                               fileSize,
+                               &newImageHandle);
+    FreePool(fileBuffer);
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to load bootmgfwx.efi image: %r\n", efiStatus);
+        return efiStatus;
+    }
+
+    //
+    // Set the device handle on the new loaded image so the boot manager can
+    // find its device/partition context (required for it to locate BCD, etc.)
+    //
+    efiStatus = gBS->HandleProtocol(newImageHandle,
+                                    &gEfiLoadedImageProtocolGuid,
+                                    (VOID**)&newLoadedImage);
+    if (!EFI_ERROR(efiStatus))
+    {
+        newLoadedImage->DeviceHandle = loadedImage->DeviceHandle;
+    }
+
+    //
+    // Start the real Windows Boot Manager. This call should not return
+    // if Windows boots successfully.
+    //
+    Print(L"SHV: Hypervisor active, starting Windows Boot Manager...\n");
+    efiStatus = gBS->StartImage(newImageHandle, NULL, NULL);
+
+    //
+    // If we get here, the boot manager returned (error or exit)
+    //
+    Print(L"SHV: Boot manager returned: %r\n", efiStatus);
+    return efiStatus;
+}
+
+EFI_STATUS
 EFIAPI
 UefiMain (
     IN EFI_HANDLE ImageHandle,
@@ -523,8 +694,20 @@ UefiMain (
     }
 
     //
-    // Call the hypervisor entrypoint
+    // Start the hypervisor on all processors
     //
-    return ShvOsErrorToError(ShvLoad());
+    efiStatus = ShvOsErrorToError(ShvLoad());
+    if (EFI_ERROR(efiStatus))
+    {
+        Print(L"SHV: Failed to load hypervisor: %r\n", efiStatus);
+        return efiStatus;
+    }
+
+    Print(L"SHV: Hypervisor loaded successfully.\n");
+
+    //
+    // Chain-load the real Windows Boot Manager (bootmgfwx.efi)
+    //
+    return ShvOsChainLoadBootManager(ImageHandle);
 }
 

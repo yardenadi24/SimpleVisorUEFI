@@ -34,6 +34,12 @@
 
 [Protocols]
   gEfiMpServiceProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiDevicePathProtocolGuid
+
+[Guids]
+  gEfiFileInfoGuid
 
 [Depex]
   TRUE
