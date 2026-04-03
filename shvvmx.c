@@ -468,7 +468,20 @@ ShvVmxSetupVmcsForVp (
     //
     __vmx_vmwrite(GUEST_IDTR_BASE, (uintptr_t)state->Idtr.Base);
     __vmx_vmwrite(GUEST_IDTR_LIMIT, state->Idtr.Limit);
-    __vmx_vmwrite(HOST_IDTR_BASE, (uintptr_t)state->Idtr.Base);
+
+    //
+    // For the host IDT, use a custom persistent IDT if one was built (UEFI
+    // path), since the firmware IDT resides in boot services memory and will
+    // be freed after ExitBootServices. Otherwise use the captured IDT (NT path).
+    //
+    if (VpData->HostIdtBase != 0)
+    {
+        __vmx_vmwrite(HOST_IDTR_BASE, VpData->HostIdtBase);
+    }
+    else
+    {
+        __vmx_vmwrite(HOST_IDTR_BASE, (uintptr_t)state->Idtr.Base);
+    }
 
     //
     // Load CR0
