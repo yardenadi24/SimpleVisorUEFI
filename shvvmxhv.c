@@ -189,28 +189,27 @@ ShvVmxHandleCpuid (
     if (VpState->VpRegs->Rax == 1)
     {
         //
-        // Set the Hypervisor Present-bit in RCX, which Intel and AMD have both
-        // reserved for this indication.
+        // CLEAR the Hypervisor Present-bit. In a nested VM (VMware/Hyper-V),
+        // the outer hypervisor already sets this bit. If Windows sees it
+        // during boot, it loads a Hyper-V aware HAL that expects working
+        // synthetic timers, reference TSC, and hypercalls. Since SimpleVisor
+        // doesn't implement any of those, the kernel hangs waiting for a
+        // timer that never fires.
         //
-        cpu_info[2] |= HYPERV_HYPERVISOR_PRESENT_BIT;
-    }
-    else if (VpState->VpRegs->Rax == HYPERV_CPUID_VENDOR_AND_MAX_FUNCTIONS)
-    {
+        // By clearing the bit, Windows boots with the standard hardware HAL
+        // and uses native APIC timers, which work correctly.
         //
-        // Return our max hypervisor CPUID leaf. Only advertise up to
-        // 0x40000001 so Windows does not try to use Hyper-V enlightenments
-        // (synthetic timers, hypercalls, etc.) from the outer hypervisor
-        // that would pass through and not work under SimpleVisor.
+        // SimpleVisor can still be detected via the magic CPUID sequence
+        // (EAX=0x41414141, ECX=0x42424242) used for unloading.
         //
-        cpu_info[0] = HYPERV_CPUID_INTERFACE;
-        cpu_info[1] = 'pmiS';
-        cpu_info[2] = 'iVel';
-        cpu_info[3] = 'ros ';
+        cpu_info[2] &= ~HYPERV_HYPERVISOR_PRESENT_BIT;
     }
     else if (VpState->VpRegs->Rax == HYPERV_CPUID_INTERFACE)
     {
         //
-        // Return our interface identifier
+        // Return our interface identifier. Windows won't query this leaf
+        // since the hypervisor present bit is cleared, but our own
+        // ShvIsOurHypervisorPresent() uses it to verify we're loaded.
         //
         cpu_info[0] = ' vhS';
         cpu_info[1] = 0;
@@ -221,10 +220,8 @@ ShvVmxHandleCpuid (
              (VpState->VpRegs->Rax <= HYPERV_CPUID_MAX))
     {
         //
-        // For any other hypervisor CPUID leaf (0x40000002+), return zeros.
-        // This prevents Windows from seeing the outer hypervisor's
-        // enlightenment data (features, timers, recommendations) which
-        // would not work through our passthrough hypervisor.
+        // Zero out all other hypervisor CPUID leaves (0x40000000,
+        // 0x40000002+) to hide the outer hypervisor's enlightenment data.
         //
         cpu_info[0] = 0;
         cpu_info[1] = 0;

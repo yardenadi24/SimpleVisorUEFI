@@ -30,23 +30,14 @@ ShvIsOurHypervisorPresent (
     INT32 cpuInfo[4];
 
     //
-    // Check if ECX[31h] ("Hypervisor Present Bit") is set in CPUID 1h
+    // We no longer set the hypervisor present bit in CPUID 1h (cleared so
+    // Windows uses the standard HAL). But we still return our signature
+    // on CPUID leaf 0x40000001. Check it directly.
     //
-    __cpuid(cpuInfo, 1);
-    if (cpuInfo[2] & HYPERV_HYPERVISOR_PRESENT_BIT)
+    __cpuid(cpuInfo, HYPERV_CPUID_INTERFACE);
+    if (cpuInfo[0] == ' vhS')
     {
-        //
-        // Next, check if this is a compatible Hypervisor, and if it has the
-        // SimpleVisor signature
-        //
-        __cpuid(cpuInfo, HYPERV_CPUID_INTERFACE);
-        if (cpuInfo[0] == ' vhS')
-        {
-            //
-            // It's us!
-            //
-            return TRUE;
-        }
+        return TRUE;
     }
 
     //
