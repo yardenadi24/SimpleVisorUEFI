@@ -22,6 +22,31 @@ Environment:
 
 #include "shv.h"
 
+//
+// Minimal serial for VMX setup logging (COM1)
+//
+#define SHV_SERIAL_PORT_VMX 0x3F8
+static void __forceinline
+VmxSerialPutChar(char c)
+{
+    while ((__inbyte(SHV_SERIAL_PORT_VMX + 5) & 0x20) == 0);
+    __outbyte(SHV_SERIAL_PORT_VMX, (unsigned char)c);
+}
+static void __forceinline
+VmxSerialPrint(const char* s)
+{
+    while (*s) { if (*s == '\n') VmxSerialPutChar('\r'); VmxSerialPutChar(*s++); }
+}
+static void __forceinline
+VmxSerialPrintHex32(UINT32 v)
+{
+    const char h[] = "0123456789ABCDEF";
+    char b[11]; int i;
+    b[0]='0'; b[1]='x';
+    for (i=0;i<8;i++) b[2+i]=h[(v>>(28-i*4))&0xF];
+    b[10]='\0'; VmxSerialPrint(b);
+}
+
 VOID
 ShvVmxMtrrInitialize (
     _In_ PSHV_VP_DATA VpData
@@ -347,18 +372,37 @@ ShvVmxSetupVmcsForVp (
     // Enable no pin-based options ourselves, but there may be some required by
     // the processor. Use ShvUtilAdjustMsr to add those in.
     //
-    __vmx_vmwrite(PIN_BASED_VM_EXEC_CONTROL,
-                           ShvUtilAdjustMsr(VpData->MsrData[13], 0));
+    {
+        UINT32 pinCtl = ShvUtilAdjustMsr(VpData->MsrData[13], 0);
+        __vmx_vmwrite(PIN_BASED_VM_EXEC_CONTROL, pinCtl);
+        VmxSerialPrint("[HV] PIN_BASED_CTRL = ");
+        VmxSerialPrintHex32(pinCtl);
+        VmxSerialPrint("\n");
+    }
 
     //
     // In order for our choice of supporting RDTSCP and XSAVE/RESTORES above to
     // actually mean something, we have to request secondary controls. We also
     // want to activate the MSR bitmap in order to keep them from being caught.
     //
-    __vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL,
-                           ShvUtilAdjustMsr(VpData->MsrData[14],
-                                            CPU_BASED_ACTIVATE_MSR_BITMAP |
-                                            CPU_BASED_ACTIVATE_SECONDARY_CONTROLS));
+    {
+        UINT32 cpuCtl = ShvUtilAdjustMsr(VpData->MsrData[14],
+                                          CPU_BASED_ACTIVATE_MSR_BITMAP |
+                                          CPU_BASED_ACTIVATE_SECONDARY_CONTROLS);
+        __vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, cpuCtl);
+        VmxSerialPrint("[HV] CPU_BASED_CTRL = ");
+        VmxSerialPrintHex32(cpuCtl);
+        if (cpuCtl & CPU_BASED_HLT_EXITING) VmxSerialPrint(" [HLT]");
+        if (cpuCtl & CPU_BASED_MWAIT_EXITING) VmxSerialPrint(" [MWAIT]");
+        if (cpuCtl & CPU_BASED_MONITOR_EXITING) VmxSerialPrint(" [MONITOR]");
+        if (cpuCtl & CPU_BASED_RDTSC_EXITING) VmxSerialPrint(" [RDTSC]");
+        if (cpuCtl & CPU_BASED_INVLPG_EXITING) VmxSerialPrint(" [INVLPG]");
+        if (cpuCtl & CPU_BASED_CR3_LOAD_EXITING) VmxSerialPrint(" [CR3_LOAD]");
+        if (cpuCtl & CPU_BASED_CR3_STORE_EXITING) VmxSerialPrint(" [CR3_STORE]");
+        if (cpuCtl & CPU_BASED_MOV_DR_EXITING) VmxSerialPrint(" [MOV_DR]");
+        if (cpuCtl & CPU_BASED_UNCOND_IO_EXITING) VmxSerialPrint(" [IO]");
+        VmxSerialPrint("\n");
+    }
 
     //
     // Make sure to enter us in x64 mode at all times. Also enable

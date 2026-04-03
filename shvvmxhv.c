@@ -350,6 +350,11 @@ ShvVmxHandleExit (
     {
         HvSerialPrint("[HV] EXIT ");
         HvSerialPrint(HvExitReasonToString(VpState->ExitReason));
+        if (VpState->ExitReason == EXIT_REASON_CPUID)
+        {
+            HvSerialPrint(" leaf=");
+            HvSerialPrintHex(VpState->VpRegs->Rax);
+        }
         HvSerialPrint(" rip=");
         HvSerialPrintHex(VpState->GuestRip);
         if (VpState->ExitReason <= 1)
@@ -391,6 +396,23 @@ ShvVmxHandleExit (
     case EXIT_REASON_VMXOFF:
     case EXIT_REASON_VMXON:
         ShvVmxHandleVmx(VpState);
+        break;
+
+    case EXIT_REASON_HLT:
+        //
+        // HLT may be forced as must-be-1 by VMware. If we don't handle it,
+        // the guest hangs forever (HLT with no VM-Exit = CPU halted until
+        // interrupt, but with HLT exiting forced, we eat the HLT and the
+        // guest never actually halts, so we must advance RIP and let the
+        // guest continue — the pending interrupt will fire immediately).
+        //
+        break;
+    case EXIT_REASON_MWAIT_INSTRUCTION:
+    case EXIT_REASON_MONITOR_INSTRUCTION:
+        //
+        // MWAIT/MONITOR may be forced as must-be-1. Treat as NOP —
+        // just advance RIP past the instruction.
+        //
         break;
 
     case EXIT_REASON_EXTERNAL_INTERRUPT:
