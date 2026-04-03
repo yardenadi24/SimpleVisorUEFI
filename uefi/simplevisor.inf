@@ -30,16 +30,12 @@
   UefiBootServicesTableLib
   UefiRuntimeServicesTableLib
   MemoryAllocationLib
+  DevicePathLib
   DebugLib
 
 [Protocols]
   gEfiMpServiceProtocolGuid
   gEfiLoadedImageProtocolGuid
-  gEfiSimpleFileSystemProtocolGuid
-  gEfiDevicePathProtocolGuid
-
-[Guids]
-  gEfiFileInfoGuid
 
 [Depex]
   TRUE

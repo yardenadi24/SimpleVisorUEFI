@@ -46,8 +46,7 @@ Environment:
 //
 #include <Protocol/LoadedImage.h>
 #include <Protocol/DevicePath.h>
-#include <Guid/FileInfo.h>
-#include <Protocol/SimpleFileSystem.h>
+#include <Library/DevicePathLib.h>
 
 //
 // Variable Arguments (CRT)
@@ -79,6 +78,58 @@ CHAR8 *gEfiCallerBaseName = "SimpleVisor";
 // PI Multi Processor Services Protocol
 //
 EFI_MP_SERVICES_PROTOCOL* _gPiMpService;
+
+//
+// Serial port I/O for debug output (COM1 = 0x3F8)
+//
+#define COM1_PORT   0x3F8
+
+VOID
+SerialPutChar (
+    _In_ CHAR8 c
+    )
+{
+    //
+    // Wait for transmit holding register to be empty
+    //
+    while ((__inbyte(COM1_PORT + 5) & 0x20) == 0);
+    __outbyte(COM1_PORT, (UINT8)c);
+}
+
+VOID
+SerialPrint (
+    _In_ CONST CHAR8* String
+    )
+{
+    while (*String != '\0')
+    {
+        if (*String == '\n')
+        {
+            SerialPutChar('\r');
+        }
+        SerialPutChar(*String);
+        String++;
+    }
+}
+
+VOID
+SerialPrintHex64 (
+    _In_ UINT64 Value
+    )
+{
+    CHAR8 hex[] = "0123456789ABCDEF";
+    CHAR8 buffer[19];
+    INT32 i;
+
+    buffer[0] = '0';
+    buffer[1] = 'x';
+    for (i = 0; i < 16; i++)
+    {
+        buffer[2 + i] = hex[(Value >> (60 - i * 4)) & 0xF];
+    }
+    buffer[18] = '\0';
+    SerialPrint(buffer);
+}
 
 //
 // TSS Segment we will use
@@ -170,13 +221,7 @@ ShvOsBuildHostPageTables (
     UINT64 *Pml4, *Pdpt, *Pd;
     UINT32 i, j;
 
-    //
-    // The UEFI firmware's page tables (CR3) reside in EfiBootServicesData
-    // memory and will be freed after ExitBootServices. The hypervisor's
-    // HOST_CR3 must point to page tables that persist in runtime memory.
-    // Build identity-mapped (virtual == physical) page tables using 2MB
-    // large pages, covering the first 512GB of physical address space.
-    //
+    SerialPrint("[SHV] Building host page tables (identity-mapped, 2MB pages, 512GB)\n");
 
     //
     // Allocate PML4 (1 page)
@@ -184,9 +229,11 @@ ShvOsBuildHostPageTables (
     Pml4 = AllocateAlignedRuntimePages(1, EFI_PAGE_SIZE);
     if (Pml4 == NULL)
     {
+        SerialPrint("[SHV] ERROR: Failed to allocate PML4\n");
         return SHV_STATUS_NO_RESOURCES;
     }
     ZeroMem(Pml4, EFI_PAGE_SIZE);
+    SerialPrint("[SHV]   PML4 at "); SerialPrintHex64((UINT64)Pml4); SerialPrint("\n");
 
     //
     // Allocate PDPT (1 page, 512 entries covering 512GB)
@@ -194,10 +241,12 @@ ShvOsBuildHostPageTables (
     Pdpt = AllocateAlignedRuntimePages(1, EFI_PAGE_SIZE);
     if (Pdpt == NULL)
     {
+        SerialPrint("[SHV] ERROR: Failed to allocate PDPT\n");
         FreeAlignedPages(Pml4, 1);
         return SHV_STATUS_NO_RESOURCES;
     }
     ZeroMem(Pdpt, EFI_PAGE_SIZE);
+    SerialPrint("[SHV]   PDPT at "); SerialPrintHex64((UINT64)Pdpt); SerialPrint("\n");
 
     //
     // Allocate PD pages (512 pages, each with 512 entries of 2MB pages)
@@ -205,11 +254,13 @@ ShvOsBuildHostPageTables (
     Pd = AllocateAlignedRuntimePages(PDPTE_ENTRY_COUNT, EFI_PAGE_SIZE);
     if (Pd == NULL)
     {
+        SerialPrint("[SHV] ERROR: Failed to allocate PD pages\n");
         FreeAlignedPages(Pml4, 1);
         FreeAlignedPages(Pdpt, 1);
         return SHV_STATUS_NO_RESOURCES;
     }
     ZeroMem(Pd, PDPTE_ENTRY_COUNT * EFI_PAGE_SIZE);
+    SerialPrint("[SHV]   PD pages at "); SerialPrintHex64((UINT64)Pd); SerialPrint("\n");
 
     //
     // PML4[0] -> PDPT (Present | Read/Write)
@@ -240,9 +291,10 @@ ShvOsBuildHostPageTables (
 
     //
     // Override SystemDirectoryTableBase with our runtime page tables.
-    // In UEFI identity mapping, virtual address == physical address.
     //
     VpData->SystemDirectoryTableBase = (UINT64)Pml4;
+    SerialPrint("[SHV]   HOST_CR3 = "); SerialPrintHex64((UINT64)Pml4); SerialPrint("\n");
+    SerialPrint("[SHV] Host page tables built OK\n");
     return SHV_STATUS_SUCCESS;
 }
 
@@ -260,9 +312,11 @@ ShvOsBuildHostIdt (
     // but the memory itself must be valid to avoid triple faults if an NMI
     // arrives during VMX root mode execution.
     //
+    SerialPrint("[SHV] Building host IDT in runtime memory\n");
     HostIdt = AllocateRuntimeZeroPool(EFI_PAGE_SIZE);
     if (HostIdt == NULL)
     {
+        SerialPrint("[SHV] ERROR: Failed to allocate host IDT\n");
         return SHV_STATUS_NO_RESOURCES;
     }
 
@@ -270,6 +324,8 @@ ShvOsBuildHostIdt (
     // Store the host IDT base for VMCS HOST_IDTR_BASE
     //
     VpData->HostIdtBase = (UINT64)HostIdt;
+    SerialPrint("[SHV]   HOST_IDTR_BASE = "); SerialPrintHex64((UINT64)HostIdt); SerialPrint("\n");
+    SerialPrint("[SHV] Host IDT built OK\n");
     return SHV_STATUS_SUCCESS;
 }
 
@@ -283,6 +339,8 @@ ShvOsPrepareProcessor (
     KDESCRIPTOR Gdtr;
     INT32 status;
 
+    SerialPrint("[SHV] === ShvOsPrepareProcessor START ===\n");
+
     //
     // Clear AC in case it's not been reset yet
     //
@@ -292,6 +350,8 @@ ShvOsPrepareProcessor (
     // Capture the current GDT
     //
     _sgdt(&Gdtr.Limit);
+    SerialPrint("[SHV] Original GDTR base = "); SerialPrintHex64((UINT64)Gdtr.Base);
+    SerialPrint(", limit = "); SerialPrintHex64((UINT64)Gdtr.Limit); SerialPrint("\n");
 
     //
     // Allocate a new GDT as big as the old one, or to cover selector 0x60
@@ -347,6 +407,8 @@ ShvOsPrepareProcessor (
     // Load the task register
     //
     _ltr(KGDT64_SYS_TSS);
+    SerialPrint("[SHV] New GDT at "); SerialPrintHex64((UINT64)NewGdt);
+    SerialPrint(", TSS at "); SerialPrintHex64((UINT64)Tss); SerialPrint("\n");
 
     //
     // Build identity-mapped host page tables in runtime memory. The UEFI
@@ -356,6 +418,7 @@ ShvOsPrepareProcessor (
     status = ShvOsBuildHostPageTables(VpData);
     if (status != SHV_STATUS_SUCCESS)
     {
+        SerialPrint("[SHV] ERROR: ShvOsBuildHostPageTables failed\n");
         return status;
     }
 
@@ -366,9 +429,11 @@ ShvOsPrepareProcessor (
     status = ShvOsBuildHostIdt(VpData);
     if (status != SHV_STATUS_SUCCESS)
     {
+        SerialPrint("[SHV] ERROR: ShvOsBuildHostIdt failed\n");
         return status;
     }
 
+    SerialPrint("[SHV] === ShvOsPrepareProcessor DONE ===\n");
     return SHV_STATUS_SUCCESS;
 }
 
@@ -516,15 +581,10 @@ ShvOsChainLoadBootManager (
 {
     EFI_STATUS efiStatus;
     EFI_LOADED_IMAGE_PROTOCOL* loadedImage;
-    EFI_LOADED_IMAGE_PROTOCOL* newLoadedImage;
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* fileSystem;
-    EFI_FILE_PROTOCOL* rootDir;
-    EFI_FILE_PROTOCOL* bootFile;
-    EFI_FILE_INFO* fileInfo;
-    UINTN fileInfoSize;
-    VOID* fileBuffer;
-    UINTN fileSize;
+    EFI_DEVICE_PATH_PROTOCOL* bootFilePath;
     EFI_HANDLE newImageHandle;
+
+    SerialPrint("[SHV] Chain-loading real Windows Boot Manager\n");
 
     //
     // Get our loaded image protocol to find which device we were loaded from
@@ -534,140 +594,64 @@ ShvOsChainLoadBootManager (
                                     (VOID**)&loadedImage);
     if (EFI_ERROR(efiStatus))
     {
-        Print(L"SHV: Failed to get loaded image protocol: %r\n", efiStatus);
+        SerialPrint("[SHV] ERROR: Failed to get LoadedImage protocol\n");
         return efiStatus;
     }
 
-    //
-    // Open the file system on the same device (EFI System Partition)
-    //
-    efiStatus = gBS->HandleProtocol(loadedImage->DeviceHandle,
-                                    &gEfiSimpleFileSystemProtocolGuid,
-                                    (VOID**)&fileSystem);
-    if (EFI_ERROR(efiStatus))
-    {
-        Print(L"SHV: Failed to get file system protocol: %r\n", efiStatus);
-        return efiStatus;
-    }
+    SerialPrint("[SHV]   Our DeviceHandle = ");
+    SerialPrintHex64((UINT64)loadedImage->DeviceHandle);
+    SerialPrint("\n");
 
     //
-    // Open the root directory
+    // Build a file device path for the real boot manager on the same device.
+    // Using FileDevicePath + LoadImage (with device path) is the correct way
+    // to chain-load — it gives the boot manager full device/file context so
+    // it can find BCD, winload.efi, and other boot files.
     //
-    efiStatus = fileSystem->OpenVolume(fileSystem, &rootDir);
-    if (EFI_ERROR(efiStatus))
+    bootFilePath = FileDevicePath(loadedImage->DeviceHandle,
+                                  L"\\EFI\\Microsoft\\Boot\\bootmgfwx.efi");
+    if (bootFilePath == NULL)
     {
-        Print(L"SHV: Failed to open root directory: %r\n", efiStatus);
-        return efiStatus;
-    }
-
-    //
-    // Open the real Windows Boot Manager (renamed to bootmgfwx.efi)
-    //
-    efiStatus = rootDir->Open(rootDir,
-                              &bootFile,
-                              L"\\EFI\\Microsoft\\Boot\\bootmgfwx.efi",
-                              EFI_FILE_MODE_READ,
-                              0);
-    if (EFI_ERROR(efiStatus))
-    {
-        Print(L"SHV: Failed to open bootmgfwx.efi: %r\n", efiStatus);
-        rootDir->Close(rootDir);
-        return efiStatus;
-    }
-
-    //
-    // Get the file size
-    //
-    fileInfoSize = 0;
-    efiStatus = bootFile->GetInfo(bootFile, &gEfiFileInfoGuid, &fileInfoSize, NULL);
-    if (efiStatus != EFI_BUFFER_TOO_SMALL)
-    {
-        Print(L"SHV: Failed to query file info size: %r\n", efiStatus);
-        bootFile->Close(bootFile);
-        rootDir->Close(rootDir);
-        return efiStatus;
-    }
-
-    fileInfo = AllocatePool(fileInfoSize);
-    if (fileInfo == NULL)
-    {
-        bootFile->Close(bootFile);
-        rootDir->Close(rootDir);
+        SerialPrint("[SHV] ERROR: Failed to build device path\n");
         return EFI_OUT_OF_RESOURCES;
     }
 
-    efiStatus = bootFile->GetInfo(bootFile, &gEfiFileInfoGuid, &fileInfoSize, fileInfo);
-    if (EFI_ERROR(efiStatus))
-    {
-        Print(L"SHV: Failed to get file info: %r\n", efiStatus);
-        FreePool(fileInfo);
-        bootFile->Close(bootFile);
-        rootDir->Close(rootDir);
-        return efiStatus;
-    }
-
-    fileSize = (UINTN)fileInfo->FileSize;
-    FreePool(fileInfo);
+    SerialPrint("[SHV]   Loading bootmgfwx.efi via device path\n");
 
     //
-    // Allocate a buffer and read the boot manager image
+    // Load the real boot manager image using the device path
     //
-    fileBuffer = AllocatePool(fileSize);
-    if (fileBuffer == NULL)
-    {
-        bootFile->Close(bootFile);
-        rootDir->Close(rootDir);
-        return EFI_OUT_OF_RESOURCES;
-    }
-
-    efiStatus = bootFile->Read(bootFile, &fileSize, fileBuffer);
-    bootFile->Close(bootFile);
-    rootDir->Close(rootDir);
-    if (EFI_ERROR(efiStatus))
-    {
-        Print(L"SHV: Failed to read bootmgfwx.efi: %r\n", efiStatus);
-        FreePool(fileBuffer);
-        return efiStatus;
-    }
-
-    //
-    // Load the real boot manager image from the buffer
-    //
-    efiStatus = gBS->LoadImage(FALSE,
+    efiStatus = gBS->LoadImage(TRUE,
                                ImageHandle,
+                               bootFilePath,
                                NULL,
-                               fileBuffer,
-                               fileSize,
+                               0,
                                &newImageHandle);
-    FreePool(fileBuffer);
+    FreePool(bootFilePath);
     if (EFI_ERROR(efiStatus))
     {
-        Print(L"SHV: Failed to load bootmgfwx.efi image: %r\n", efiStatus);
+        SerialPrint("[SHV] ERROR: LoadImage failed for bootmgfwx.efi\n");
         return efiStatus;
     }
 
-    //
-    // Set the device handle on the new loaded image so the boot manager can
-    // find its device/partition context (required for it to locate BCD, etc.)
-    //
-    efiStatus = gBS->HandleProtocol(newImageHandle,
-                                    &gEfiLoadedImageProtocolGuid,
-                                    (VOID**)&newLoadedImage);
-    if (!EFI_ERROR(efiStatus))
-    {
-        newLoadedImage->DeviceHandle = loadedImage->DeviceHandle;
-    }
+    SerialPrint("[SHV]   Image loaded, handle = ");
+    SerialPrintHex64((UINT64)newImageHandle);
+    SerialPrint("\n");
 
     //
     // Start the real Windows Boot Manager. This call should not return
     // if Windows boots successfully.
     //
+    SerialPrint("[SHV]   Calling StartImage (Windows Boot Manager)...\n");
     Print(L"SHV: Hypervisor active, starting Windows Boot Manager...\n");
     efiStatus = gBS->StartImage(newImageHandle, NULL, NULL);
 
     //
     // If we get here, the boot manager returned (error or exit)
     //
+    SerialPrint("[SHV]   StartImage returned: ");
+    SerialPrintHex64((UINT64)efiStatus);
+    SerialPrint("\n");
     Print(L"SHV: Boot manager returned: %r\n", efiStatus);
     return efiStatus;
 }
@@ -681,28 +665,51 @@ UefiMain (
 {
     EFI_STATUS efiStatus;
 
+    SerialPrint("\n\n[SHV] ========================================\n");
+    SerialPrint("[SHV] SimpleVisor UEFI Hypervisor Starting\n");
+    SerialPrint("[SHV] ========================================\n");
+
     //
     // Find the PI MpService protocol used for multi-processor startup
     //
+    SerialPrint("[SHV] Locating MP Services protocol...\n");
     efiStatus = gBS->LocateProtocol(&gEfiMpServiceProtocolGuid,
                                     NULL,
                                     &_gPiMpService);
     if (EFI_ERROR(efiStatus))
     {
+        SerialPrint("[SHV] ERROR: MpServices not found\n");
         Print(L"Unable to locate the MpServices protocol: %r\n", efiStatus);
         return efiStatus;
     }
+    SerialPrint("[SHV] MP Services located OK\n");
 
     //
-    // Start the hypervisor on all processors
+    // Log current CR3 before hypervisor load
     //
+    SerialPrint("[SHV] Current CR3 (UEFI page tables) = ");
+    SerialPrintHex64(__readcr3());
+    SerialPrint("\n");
+    SerialPrint("[SHV] Current CR0 = ");
+    SerialPrintHex64(__readcr0());
+    SerialPrint("\n");
+    SerialPrint("[SHV] Current CR4 = ");
+    SerialPrintHex64(__readcr4());
+    SerialPrint("\n");
+
+    //
+    // Start the hypervisor
+    //
+    SerialPrint("[SHV] Calling ShvLoad()...\n");
     efiStatus = ShvOsErrorToError(ShvLoad());
     if (EFI_ERROR(efiStatus))
     {
+        SerialPrint("[SHV] ERROR: ShvLoad failed\n");
         Print(L"SHV: Failed to load hypervisor: %r\n", efiStatus);
         return efiStatus;
     }
 
+    SerialPrint("[SHV] *** Hypervisor loaded successfully ***\n");
     Print(L"SHV: Hypervisor loaded successfully.\n");
 
     //
