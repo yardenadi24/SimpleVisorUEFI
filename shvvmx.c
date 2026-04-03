@@ -361,11 +361,15 @@ ShvVmxSetupVmcsForVp (
                                             CPU_BASED_ACTIVATE_SECONDARY_CONTROLS));
 
     //
-    // Make sure to enter us in x64 mode at all times.
+    // Make sure to enter us in x64 mode at all times. Also enable
+    // "acknowledge interrupt on exit" so that when external interrupt exiting
+    // is active (may be forced as must-be-1 in nested VMs), we can read the
+    // interrupt vector from VM_EXIT_INTR_INFO and re-inject it into the guest.
     //
     __vmx_vmwrite(VM_EXIT_CONTROLS,
                            ShvUtilAdjustMsr(VpData->MsrData[15],
-                                            VM_EXIT_IA32E_MODE));
+                                            VM_EXIT_IA32E_MODE |
+                                            VM_EXIT_ACK_INTR_ON_EXIT));
 
     //
     // As we exit back into the guest, make sure to exist in x64 mode as well.
