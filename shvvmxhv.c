@@ -26,7 +26,7 @@ Environment:
 // Minimal serial output for VM-Exit handler debugging (COM2 = 0x2F8).
 // These are inline to avoid any stack/calling-convention issues in VMX root.
 //
-#define SHV_SERIAL_PORT 0x2F8
+#define SHV_SERIAL_PORT 0x3F8
 
 static void __forceinline
 HvSerialPutChar (
