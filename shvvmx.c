@@ -323,11 +323,10 @@ ShvVmxSetupVmcsForVp (
     __vmx_vmwrite(VMCS_LINK_POINTER, ~0ULL);
 
     //
-    // Intercept ALL exceptions (vectors 0-31) for diagnostic logging.
-    // They will be re-injected transparently by the exit handler.
+    // Do NOT set EXCEPTION_BITMAP -- trapping all exceptions causes crashes
+    // because the re-injection path has issues with certain exception types.
+    // Leave at 0 (default) so exceptions are handled natively by the guest.
     //
-    __vmx_vmwrite(EXCEPTION_BITMAP, 0xFFFFFFFF);
-    VmxSerialPrint("[HV] EXCEPTION_BITMAP = 0xFFFFFFFF (all trapped for logging)\n");
 
     //
     // Enable EPT features if supported
@@ -395,7 +394,8 @@ ShvVmxSetupVmcsForVp (
     {
         UINT32 cpuCtl = ShvUtilAdjustMsr(VpData->MsrData[14],
                                           CPU_BASED_ACTIVATE_MSR_BITMAP |
-                                          CPU_BASED_ACTIVATE_SECONDARY_CONTROLS);
+                                          CPU_BASED_ACTIVATE_SECONDARY_CONTROLS |
+                                          CPU_BASED_CR3_LOAD_EXITING);
         __vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, cpuCtl);
         VmxSerialPrint("[HV] CPU_BASED_CTRL = ");
         VmxSerialPrintHex32(cpuCtl);

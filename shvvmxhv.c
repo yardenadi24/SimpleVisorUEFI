@@ -415,6 +415,56 @@ ShvVmxHandleExit (
         //
         break;
 
+    case EXIT_REASON_CR_ACCESS:
+    {
+        //
+        // CR3 load exit. In nested VMware, the L0 hypervisor needs to see
+        // CR3 changes to synchronize its own page table tracking. Without
+        // CR3_LOAD_EXITING, VMware's nested VMCS guest CR3 can become stale,
+        // causing Windows to hang after switching page tables during boot.
+        //
+        // EXIT_QUALIFICATION encodes the CR access:
+        //   Bits 3:0 = CR number (3 for CR3)
+        //   Bits 5:4 = Access type (0 = MOV to CR)
+        //   Bits 11:8 = Source register
+        //
+        uintptr_t qual = ShvVmxRead(EXIT_QUALIFICATION);
+        UINT32 crNum = (UINT32)(qual & 0xF);
+        UINT32 accessType = (UINT32)((qual >> 4) & 0x3);
+        UINT32 reg = (UINT32)((qual >> 8) & 0xF);
+
+        if (crNum == 3 && accessType == 0)
+        {
+            //
+            // MOV to CR3: read the new value from the source register
+            // and write it to the VMCS guest CR3 field.
+            //
+            UINT64 newCr3;
+            switch (reg)
+            {
+            case 0:  newCr3 = VpState->VpRegs->Rax; break;
+            case 1:  newCr3 = VpState->VpRegs->Rcx; break;
+            case 2:  newCr3 = VpState->VpRegs->Rdx; break;
+            case 3:  newCr3 = VpState->VpRegs->Rbx; break;
+            case 4:  newCr3 = VpState->GuestRsp; break;
+            case 5:  newCr3 = VpState->VpRegs->Rbp; break;
+            case 6:  newCr3 = VpState->VpRegs->Rsi; break;
+            case 7:  newCr3 = VpState->VpRegs->Rdi; break;
+            case 8:  newCr3 = VpState->VpRegs->R8; break;
+            case 9:  newCr3 = VpState->VpRegs->R9; break;
+            case 10: newCr3 = VpState->VpRegs->R10; break;
+            case 11: newCr3 = VpState->VpRegs->R11; break;
+            case 12: newCr3 = VpState->VpRegs->R12; break;
+            case 13: newCr3 = VpState->VpRegs->R13; break;
+            case 14: newCr3 = VpState->VpRegs->R14; break;
+            case 15: newCr3 = VpState->VpRegs->R15; break;
+            default: newCr3 = 0; break;
+            }
+            __vmx_vmwrite(GUEST_CR3, newCr3);
+        }
+        break;
+    }
+
     case EXIT_REASON_EXTERNAL_INTERRUPT:
     {
         //
