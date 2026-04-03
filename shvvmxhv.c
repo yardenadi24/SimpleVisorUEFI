@@ -276,6 +276,68 @@ ShvVmxHandleVmx (
     __vmx_vmwrite(GUEST_RFLAGS, VpState->GuestEFlags);
 }
 
+static const char*
+HvExitReasonToString (
+    _In_ UINT16 reason
+    )
+{
+    switch (reason)
+    {
+    case 0:  return "EXCEPTION_NMI";
+    case 1:  return "EXT_INTERRUPT";
+    case 2:  return "TRIPLE_FAULT";
+    case 3:  return "INIT";
+    case 4:  return "SIPI";
+    case 7:  return "VIRT_INTR_PENDING";
+    case 8:  return "VIRT_NMI_PENDING";
+    case 9:  return "TASK_SWITCH";
+    case 10: return "CPUID";
+    case 12: return "HLT";
+    case 13: return "INVD";
+    case 14: return "INVLPG";
+    case 15: return "RDPMC";
+    case 16: return "RDTSC";
+    case 18: return "VMCALL";
+    case 19: return "VMCLEAR";
+    case 20: return "VMLAUNCH";
+    case 21: return "VMPTRLD";
+    case 22: return "VMPTRST";
+    case 23: return "VMREAD";
+    case 24: return "VMRESUME";
+    case 25: return "VMWRITE";
+    case 26: return "VMXOFF";
+    case 27: return "VMXON";
+    case 28: return "CR_ACCESS";
+    case 29: return "DR_ACCESS";
+    case 30: return "IO_INSTR";
+    case 31: return "MSR_READ";
+    case 32: return "MSR_WRITE";
+    case 33: return "INVALID_GUEST";
+    case 34: return "MSR_LOADING";
+    case 36: return "MWAIT";
+    case 37: return "MTF";
+    case 39: return "MONITOR";
+    case 40: return "PAUSE";
+    case 41: return "MCE_VMENTRY";
+    case 43: return "TPR_BELOW";
+    case 44: return "APIC_ACCESS";
+    case 46: return "GDTR_IDTR";
+    case 47: return "LDTR_TR";
+    case 48: return "EPT_VIOLATION";
+    case 49: return "EPT_MISCONFIG";
+    case 50: return "INVEPT";
+    case 51: return "RDTSCP";
+    case 52: return "PREEMPT_TIMER";
+    case 53: return "INVVPID";
+    case 54: return "WBINVD";
+    case 55: return "XSETBV";
+    case 58: return "INVPCID";
+    case 63: return "XSAVES";
+    case 64: return "XRSTORS";
+    default: return "UNKNOWN";
+    }
+}
+
 VOID
 ShvVmxHandleExit (
     _In_ PSHV_VP_STATE VpState
@@ -289,8 +351,8 @@ ShvVmxHandleExit (
     long count = _InterlockedIncrement(&exitCount);
     if (count <= 200 || (count % 1000) == 0)
     {
-        HvSerialPrint("[HV] EXIT reason=");
-        HvSerialPrintHex(VpState->ExitReason);
+        HvSerialPrint("[HV] EXIT ");
+        HvSerialPrint(HvExitReasonToString(VpState->ExitReason));
         HvSerialPrint(" rip=");
         HvSerialPrintHex(VpState->GuestRip);
         if (VpState->ExitReason <= 1)
@@ -366,8 +428,8 @@ ShvVmxHandleExit (
         // Unknown/unexpected exit reason. Do not advance RIP as the exit
         // may not be instruction-based. Just resume the guest.
         //
-        HvSerialPrint("[HV] UNHANDLED EXIT reason=");
-        HvSerialPrintHex(VpState->ExitReason);
+        HvSerialPrint("[HV] UNHANDLED EXIT ");
+        HvSerialPrint(HvExitReasonToString(VpState->ExitReason));
         HvSerialPrint(" rip=");
         HvSerialPrintHex(VpState->GuestRip);
         HvSerialPrint("\n");
