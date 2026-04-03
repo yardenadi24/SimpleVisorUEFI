@@ -287,7 +287,7 @@ ShvVmxHandleExit (
     //
     static volatile long exitCount = 0;
     long count = _InterlockedIncrement(&exitCount);
-    if (count <= 50 || (count % 10000) == 0)
+    if (count <= 200 || (count % 1000) == 0)
     {
         HvSerialPrint("[HV] EXIT reason=");
         HvSerialPrintHex(VpState->ExitReason);
