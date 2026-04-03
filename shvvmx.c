@@ -323,6 +323,13 @@ ShvVmxSetupVmcsForVp (
     __vmx_vmwrite(VMCS_LINK_POINTER, ~0ULL);
 
     //
+    // Intercept ALL exceptions (vectors 0-31) for diagnostic logging.
+    // They will be re-injected transparently by the exit handler.
+    //
+    __vmx_vmwrite(EXCEPTION_BITMAP, 0xFFFFFFFF);
+    VmxSerialPrint("[HV] EXCEPTION_BITMAP = 0xFFFFFFFF (all trapped for logging)\n");
+
+    //
     // Enable EPT features if supported
     //
     if (VpData->EptControls != 0)
