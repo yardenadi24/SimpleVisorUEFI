@@ -155,8 +155,13 @@ ShvVmxHandleXsetbv (
     )
 {
     //
-    // Simply issue the XSETBV instruction on the native logical processor.
+    // XSETBV requires CR4.OSXSAVE to be set. On VM-Exit, HOST_CR4 is loaded,
+    // which may not have OSXSAVE if it wasn't set when the hypervisor captured
+    // the initial state (e.g., UEFI didn't enable OSXSAVE, but Windows did
+    // later without causing a VM-Exit). Ensure OSXSAVE is set before issuing
+    // XSETBV, otherwise we get a #GP in VMX root mode.
     //
+    __writecr4(__readcr4() | 0x40000);
 
     _xsetbv((UINT32)VpState->VpRegs->Rcx,
             VpState->VpRegs->Rdx << 32 |
