@@ -499,9 +499,22 @@ ShvVmxSetupVmcsForVp (
     __vmx_vmwrite(GUEST_CR3, state->Cr3);
 
     //
-    // Load CR4
+    // Load CR4. For the host, ensure OSXSAVE (bit 18) is set if the CPU
+    // supports XSAVE (CPUID.1:ECX bit 26). The guest may enable OSXSAVE
+    // after boot (without VM-Exit since we don't trap CR4 writes), and the
+    // XSETBV VM-Exit handler needs OSXSAVE to execute _xsetbv. Without it,
+    // _xsetbv causes #GP in VMX root mode -> triple fault.
     //
-    __vmx_vmwrite(HOST_CR4, state->Cr4);
+    {
+        INT32 cpuInfo[4];
+        UINT64 hostCr4 = state->Cr4;
+        __cpuid(cpuInfo, 1);
+        if (cpuInfo[2] & (1 << 26))
+        {
+            hostCr4 |= 0x40000;
+        }
+        __vmx_vmwrite(HOST_CR4, hostCr4);
+    }
     __vmx_vmwrite(GUEST_CR4, state->Cr4);
     __vmx_vmwrite(CR4_READ_SHADOW, state->Cr4);
 
