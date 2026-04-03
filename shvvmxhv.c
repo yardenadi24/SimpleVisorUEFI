@@ -189,20 +189,33 @@ ShvVmxHandleCpuid (
     if (VpState->VpRegs->Rax == 1)
     {
         //
-        // CLEAR the Hypervisor Present-bit. In a nested VM (VMware/Hyper-V),
-        // the outer hypervisor already sets this bit. If Windows sees it
-        // during boot, it loads a Hyper-V aware HAL that expects working
-        // synthetic timers, reference TSC, and hypercalls. Since SimpleVisor
-        // doesn't implement any of those, the kernel hangs waiting for a
-        // timer that never fires.
+        // In nested VMware, __cpuidex returns L1 CPUID values which may
+        // include features that the L2 guest (Windows) shouldn't see.
+        // Filter aggressively:
         //
-        // By clearing the bit, Windows boots with the standard hardware HAL
-        // and uses native APIC timers, which work correctly.
+        // ECX bit 5  (VMX)       - L1 has this for nested VMX, but Windows
+        //                          seeing it may trigger VBS/Hyper-V init
+        // ECX bit 31 (Hypervisor) - outer hypervisor sets this, Windows
+        //                          would load Hyper-V aware HAL
         //
-        // SimpleVisor can still be detected via the magic CPUID sequence
-        // (EAX=0x41414141, ECX=0x42424242) used for unloading.
+        cpu_info[2] &= ~(1 << 5);                   // Clear VMX
+        cpu_info[2] &= ~HYPERV_HYPERVISOR_PRESENT_BIT; // Clear HV present
+
         //
-        cpu_info[2] &= ~HYPERV_HYPERVISOR_PRESENT_BIT;
+        // Log the feature bits we're returning (first few times)
+        //
+        {
+            static volatile long cpuid1Count = 0;
+            long c = _InterlockedIncrement(&cpuid1Count);
+            if (c <= 3)
+            {
+                HvSerialPrint("[HV] CPUID.1 ECX=");
+                HvSerialPrintHex((UINT64)cpu_info[2]);
+                HvSerialPrint(" EDX=");
+                HvSerialPrintHex((UINT64)cpu_info[3]);
+                HvSerialPrint("\n");
+            }
+        }
     }
     else if (VpState->VpRegs->Rax == HYPERV_CPUID_INTERFACE)
     {
