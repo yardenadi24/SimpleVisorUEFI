@@ -543,8 +543,17 @@ ShvVmxSetupVmcsForVp (
     }
 
     //
-    // Load CR0
+    // Load CR0. Set a guest-host mask to protect VMX-required CR0 bits.
+    // Without this mask, the guest can clear bits like NE, PE, PG that
+    // VMX requires in guest CR0 -- causing VMRESUME to fail silently.
+    // Both MiniVisorPkg and Illusion-rs set this mask.
     //
+    {
+        UINT64 cr0Fixed0 = VpData->MsrData[6].QuadPart;  // IA32_VMX_CR0_FIXED0
+        UINT64 cr0Fixed1 = VpData->MsrData[7].QuadPart;  // IA32_VMX_CR0_FIXED1
+        UINT64 cr0Mask = cr0Fixed0 | ~cr0Fixed1;          // Bits the guest can't change
+        __vmx_vmwrite(CR0_GUEST_HOST_MASK, cr0Mask);
+    }
     __vmx_vmwrite(CR0_READ_SHADOW, state->Cr0);
     __vmx_vmwrite(HOST_CR0, state->Cr0);
     __vmx_vmwrite(GUEST_CR0, state->Cr0);
@@ -601,6 +610,25 @@ ShvVmxSetupVmcsForVp (
     //
     __vmx_vmwrite(GUEST_IA32_DEBUGCTL, state->DebugControl);
     __vmx_vmwrite(GUEST_DR7, state->KernelDr7);
+
+    //
+    // Load SYSENTER MSRs. Windows uses SYSENTER/SYSCALL for system calls.
+    // Without these fields, the first system call after boot will fault.
+    //
+    __vmx_vmwrite(GUEST_SYSENTER_CS, __readmsr(0x174));   // IA32_SYSENTER_CS
+    __vmx_vmwrite(GUEST_SYSENTER_ESP, __readmsr(0x175));  // IA32_SYSENTER_ESP
+    __vmx_vmwrite(GUEST_SYSENTER_EIP, __readmsr(0x176));  // IA32_SYSENTER_EIP
+    __vmx_vmwrite(HOST_SYSENTER_CS, __readmsr(0x174));
+    __vmx_vmwrite(HOST_SYSENTER_ESP, __readmsr(0x175));
+    __vmx_vmwrite(HOST_SYSENTER_EIP, __readmsr(0x176));
+
+    //
+    // Set guest activity state and interruptibility to active/clear.
+    // These are required VMCS fields - leaving them uninitialized can
+    // cause VMLAUNCH/VMRESUME failures.
+    //
+    __vmx_vmwrite(GUEST_ACTIVITY_STATE, GUEST_ACTIVITY_ACTIVE);
+    __vmx_vmwrite(GUEST_INTERRUPTIBILITY_INFO, 0);
 
     //
     // Finally, load the guest stack, instruction pointer, and rflags, which
