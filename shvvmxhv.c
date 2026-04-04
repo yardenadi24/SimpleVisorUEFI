@@ -431,15 +431,11 @@ ShvVmxHandleExit (
     case EXIT_REASON_CR_ACCESS:
     {
         //
-        // CR3 load exit. In nested VMware, the L0 hypervisor needs to see
-        // CR3 changes to synchronize its own page table tracking. Without
-        // CR3_LOAD_EXITING, VMware's nested VMCS guest CR3 can become stale,
-        // causing Windows to hang after switching page tables during boot.
-        //
-        // EXIT_QUALIFICATION encodes the CR access:
-        //   Bits 3:0 = CR number (3 for CR3)
-        //   Bits 5:4 = Access type (0 = MOV to CR)
-        //   Bits 11:8 = Source register
+        // Control register access. EXIT_QUALIFICATION encodes:
+        //   Bits 3:0  = CR number (0, 3, 4, 8)
+        //   Bits 5:4  = Access type (0=MOV to CR, 1=MOV from CR, 2=CLTS, 3=LMSW)
+        //   Bits 11:8 = Source/dest register (for MOV to/from)
+        //   Bits 31:16 = LMSW source data (for LMSW)
         //
         uintptr_t qual = ShvVmxRead(EXIT_QUALIFICATION);
         UINT32 crNum = (UINT32)(qual & 0xF);
@@ -447,48 +443,110 @@ ShvVmxHandleExit (
         UINT32 reg = (UINT32)((qual >> 8) & 0xF);
 
         //
-        // Helper: read value from general purpose register by index
+        // Read value from general purpose register by index
         //
+        UINT64 regVal = 0;
+        switch (reg)
         {
-            UINT64 regVal = 0;
-            switch (reg)
-            {
-            case 0:  regVal = VpState->VpRegs->Rax; break;
-            case 1:  regVal = VpState->VpRegs->Rcx; break;
-            case 2:  regVal = VpState->VpRegs->Rdx; break;
-            case 3:  regVal = VpState->VpRegs->Rbx; break;
-            case 4:  regVal = VpState->GuestRsp; break;
-            case 5:  regVal = VpState->VpRegs->Rbp; break;
-            case 6:  regVal = VpState->VpRegs->Rsi; break;
-            case 7:  regVal = VpState->VpRegs->Rdi; break;
-            case 8:  regVal = VpState->VpRegs->R8; break;
-            case 9:  regVal = VpState->VpRegs->R9; break;
-            case 10: regVal = VpState->VpRegs->R10; break;
-            case 11: regVal = VpState->VpRegs->R11; break;
-            case 12: regVal = VpState->VpRegs->R12; break;
-            case 13: regVal = VpState->VpRegs->R13; break;
-            case 14: regVal = VpState->VpRegs->R14; break;
-            case 15: regVal = VpState->VpRegs->R15; break;
-            }
+        case 0:  regVal = VpState->VpRegs->Rax; break;
+        case 1:  regVal = VpState->VpRegs->Rcx; break;
+        case 2:  regVal = VpState->VpRegs->Rdx; break;
+        case 3:  regVal = VpState->VpRegs->Rbx; break;
+        case 4:  regVal = VpState->GuestRsp; break;
+        case 5:  regVal = VpState->VpRegs->Rbp; break;
+        case 6:  regVal = VpState->VpRegs->Rsi; break;
+        case 7:  regVal = VpState->VpRegs->Rdi; break;
+        case 8:  regVal = VpState->VpRegs->R8; break;
+        case 9:  regVal = VpState->VpRegs->R9; break;
+        case 10: regVal = VpState->VpRegs->R10; break;
+        case 11: regVal = VpState->VpRegs->R11; break;
+        case 12: regVal = VpState->VpRegs->R12; break;
+        case 13: regVal = VpState->VpRegs->R13; break;
+        case 14: regVal = VpState->VpRegs->R14; break;
+        case 15: regVal = VpState->VpRegs->R15; break;
+        }
 
-            if (crNum == 3 && accessType == 0)
+        if (accessType == 0)
+        {
+            //
+            // MOV to CR
+            //
+            if (crNum == 0)
             {
                 //
-                // MOV to CR3: write new value to VMCS guest CR3
+                // MOV to CR0: apply guest value but enforce VMX-required bits.
+                // Update read shadow with the guest's intended value.
                 //
+                UINT64 cr0Fixed0 = __readmsr(0x486);  // IA32_VMX_CR0_FIXED0
+                UINT64 cr0Fixed1 = __readmsr(0x487);  // IA32_VMX_CR0_FIXED1
+                UINT64 newCr0 = (regVal | cr0Fixed0) & cr0Fixed1;
+                __vmx_vmwrite(GUEST_CR0, newCr0);
+                __vmx_vmwrite(CR0_READ_SHADOW, regVal);
+            }
+            else if (crNum == 3)
+            {
                 __vmx_vmwrite(GUEST_CR3, regVal);
             }
-            else if (crNum == 4 && accessType == 0)
+            else if (crNum == 4)
             {
                 //
-                // MOV to CR4: guest-host mask traps VMXE bit writes.
-                // Apply the new value but keep VMXE set (needed for VMX).
-                // Update the read shadow without VMXE so guest reads see
-                // its intended value.
+                // MOV to CR4: keep VMXE set, hide it in shadow.
                 //
                 __vmx_vmwrite(GUEST_CR4, regVal | 0x2000);
                 __vmx_vmwrite(CR4_READ_SHADOW, regVal & ~0x2000ULL);
             }
+        }
+        else if (accessType == 1)
+        {
+            //
+            // MOV from CR: return the read shadow value (what guest expects)
+            //
+            UINT64 val = 0;
+            if (crNum == 0) val = ShvVmxRead(CR0_READ_SHADOW);
+            else if (crNum == 4) val = ShvVmxRead(CR4_READ_SHADOW);
+            else if (crNum == 3) val = ShvVmxRead(GUEST_CR3);
+
+            switch (reg)
+            {
+            case 0:  VpState->VpRegs->Rax = val; break;
+            case 1:  VpState->VpRegs->Rcx = val; break;
+            case 2:  VpState->VpRegs->Rdx = val; break;
+            case 3:  VpState->VpRegs->Rbx = val; break;
+            case 4:  VpState->GuestRsp = val; break;
+            case 5:  VpState->VpRegs->Rbp = val; break;
+            case 6:  VpState->VpRegs->Rsi = val; break;
+            case 7:  VpState->VpRegs->Rdi = val; break;
+            case 8:  VpState->VpRegs->R8 = val; break;
+            case 9:  VpState->VpRegs->R9 = val; break;
+            case 10: VpState->VpRegs->R10 = val; break;
+            case 11: VpState->VpRegs->R11 = val; break;
+            case 12: VpState->VpRegs->R12 = val; break;
+            case 13: VpState->VpRegs->R13 = val; break;
+            case 14: VpState->VpRegs->R14 = val; break;
+            case 15: VpState->VpRegs->R15 = val; break;
+            }
+        }
+        else if (accessType == 2)
+        {
+            //
+            // CLTS: clear CR0.TS (Task Switched flag)
+            //
+            UINT64 cr0 = ShvVmxRead(GUEST_CR0);
+            __vmx_vmwrite(GUEST_CR0, cr0 & ~0x8ULL);
+            __vmx_vmwrite(CR0_READ_SHADOW, ShvVmxRead(CR0_READ_SHADOW) & ~0x8ULL);
+        }
+        else if (accessType == 3)
+        {
+            //
+            // LMSW: load machine status word (low 16 bits of CR0)
+            //
+            UINT64 lmswData = (qual >> 16) & 0xFFFF;
+            UINT64 cr0 = ShvVmxRead(GUEST_CR0);
+            UINT64 cr0Fixed0 = __readmsr(0x486);
+            UINT64 cr0Fixed1 = __readmsr(0x487);
+            cr0 = (cr0 & ~0xFULL) | (lmswData & 0xF);
+            cr0 = (cr0 | cr0Fixed0) & cr0Fixed1;
+            __vmx_vmwrite(GUEST_CR0, cr0);
         }
         break;
     }
