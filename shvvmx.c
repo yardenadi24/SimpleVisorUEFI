@@ -394,7 +394,8 @@ ShvVmxSetupVmcsForVp (
     {
         UINT32 cpuCtl = ShvUtilAdjustMsr(VpData->MsrData[14],
                                           CPU_BASED_ACTIVATE_MSR_BITMAP |
-                                          CPU_BASED_ACTIVATE_SECONDARY_CONTROLS);
+                                          CPU_BASED_ACTIVATE_SECONDARY_CONTROLS |
+                                          CPU_BASED_CR3_LOAD_EXITING);
         __vmx_vmwrite(CPU_BASED_VM_EXEC_CONTROL, cpuCtl);
         VmxSerialPrint("[HV] CPU_BASED_CTRL = ");
         VmxSerialPrintHex32(cpuCtl);
