@@ -420,14 +420,18 @@ ShvVmxSetupVmcsForVp (
     __vmx_vmwrite(VM_EXIT_CONTROLS,
                            ShvUtilAdjustMsr(VpData->MsrData[15],
                                             VM_EXIT_IA32E_MODE |
-                                            VM_EXIT_ACK_INTR_ON_EXIT));
+                                            VM_EXIT_ACK_INTR_ON_EXIT |
+                                            VM_EXIT_SAVE_GUEST_EFER |
+                                            VM_EXIT_LOAD_HOST_EFER));
 
     //
     // As we exit back into the guest, make sure to exist in x64 mode as well.
+    // Also load guest EFER on entry to properly separate host/guest EFER state.
     //
     __vmx_vmwrite(VM_ENTRY_CONTROLS,
                            ShvUtilAdjustMsr(VpData->MsrData[16],
-                                            VM_ENTRY_IA32E_MODE));
+                                            VM_ENTRY_IA32E_MODE |
+                                            VM_ENTRY_LOAD_GUEST_EFER));
 
     //
     // Load the CS Segment (Ring 0 Code)
@@ -571,7 +575,26 @@ ShvVmxSetupVmcsForVp (
         __vmx_vmwrite(HOST_CR4, hostCr4);
     }
     __vmx_vmwrite(GUEST_CR4, state->Cr4);
-    __vmx_vmwrite(CR4_READ_SHADOW, state->Cr4);
+
+    //
+    // Set CR4 guest-host mask to hide VMXE bit from the guest.
+    // Without this, the guest sees CR4.VMXE=1 (set for VMX operation)
+    // which may confuse Windows during boot. The read shadow returns
+    // the original CR4 value (without VMXE) when the guest reads CR4.
+    // This is what MiniVisorPkg does.
+    //
+    __vmx_vmwrite(CR4_GUEST_HOST_MASK, 0x2000);  // Bit 13 = VMXE
+    __vmx_vmwrite(CR4_READ_SHADOW, state->Cr4 & ~0x2000ULL);
+
+    //
+    // Load EFER for both host and guest. MiniVisorPkg does this to properly
+    // separate host/guest EFER state across VM-Exit/Entry transitions.
+    //
+    {
+        UINT64 efer = __readmsr(0xC0000080);  // IA32_EFER
+        __vmx_vmwrite(GUEST_EFER, efer);
+        __vmx_vmwrite(HOST_EFER, efer);
+    }
 
     //
     // Load debug MSR and register (DR7)
