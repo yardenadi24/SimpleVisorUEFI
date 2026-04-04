@@ -41,7 +41,7 @@
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <Link>
-      <SubSystem>EFI Runtime</SubSystem>
+      <SubSystem>EFI_RUNTIME_DRIVER</SubSystem>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
